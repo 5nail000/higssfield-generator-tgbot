@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+
+{% block title %}Дашборд{% endblock %}
+
+{% block content %}
+<h1>Дашборд</h1>
+
+<div class="card">
+    <h2>Статистика</h2>
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-top: 1rem;">
+        <div>
+            <h3>{{ stats.total_users }}</h3>
+            <p>Всего пользователей</p>
+        </div>
+        <div>
+            <h3>{{ "%.2f"|format(stats.total_credits) }}</h3>
+            <p>Всего кредитов</p>
+        </div>
+        <div>
+            <h3>{{ stats.recent_actions }}</h3>
+            <p>Последних действий</p>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <h2>Последние действия</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Пользователь</th>
+                <th>Тип</th>
+                <th>Кредиты</th>
+                <th>Время</th>
+                <th>Действия</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for action in recent_actions %}
+            <tr>
+                <td>{{ action.id }}</td>
+                <td>{{ action.user_id }}</td>
+                <td>{{ action.action_type }}</td>
+                <td>{{ "%.2f"|format(action.credits_spent) }}</td>
+                <td>{{ action.timestamp.strftime('%d.%m.%Y %H:%M') }}</td>
+                <td><a href="{{ url_for('admin.action_details', action_id=action.id) }}" class="btn">Детали</a></td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="6">Нет действий</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div class="card">
+    <h2>Быстрые действия</h2>
+    <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-top: 1rem;">
+        <a href="{{ url_for('admin.users') }}" class="btn btn-primary">Управление пользователями</a>
+        <a href="{{ url_for('admin.history') }}" class="btn btn-primary">История действий</a>
+        <a href="{{ url_for('admin.metrics') }}" class="btn btn-primary">📊 Метрики по моделям</a>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+
+{% block title %}Пользователи{% endblock %}
+
+{% block content %}
+<h1>Пользователи</h1>
+
+<div class="card">
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Telegram ID</th>
+                <th>Имя</th>
+                <th>Кредиты</th>
+                <th>Создан</th>
+                <th>Действия</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for user in users %}
+            <tr>
+                <td>{{ user.id }}</td>
+                <td>{{ user.telegram_id }}</td>
+                <td>{{ user.username or 'N/A' }}</td>
+                <td>{{ "%.2f"|format(user.credits) }}</td>
+                <td>{{ user.created_at.strftime('%d.%m.%Y %H:%M') }}</td>
+                <td>
+                    <button onclick="showCreditModal({{ user.id }}, 'add')" class="btn btn-success">+ Кредиты</button>
+                    <button onclick="showCreditModal({{ user.id }}, 'subtract')" class="btn btn-danger">- Кредиты</button>
+                </td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="6">Нет пользователей</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    
+    {% if total_pages > 1 %}
+    <div class="pagination">
+        {% for p in range(1, total_pages + 1) %}
+        <a href="{{ url_for('admin.users', page=p) }}" {% if p == page %}class="active"{% endif %}>{{ p }}</a>
+        {% endfor %}
+    </div>
+    {% endif %}
+</div>
+
+<!-- Модальное окно для начисления/списания кредитов -->
+<div id="creditModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000;">
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; padding: 2rem; border-radius: 8px; min-width: 300px;">
+        <h2 id="modalTitle">Начислить кредиты</h2>
+        <form id="creditForm" method="POST">
+            <div class="form-group">
+                <label for="amount">Сумма:</label>
+                <input type="number" id="amount" name="amount" step="0.01" min="0.01" required>
+            </div>
+            <div style="display: flex; gap: 1rem; margin-top: 1rem;">
+                <button type="submit" class="btn" id="submitBtn">Подтвердить</button>
+                <button type="button" onclick="closeCreditModal()" class="btn btn-danger">Отмена</button>
+            </div>
+        </form>
+        <div id="creditMessage"></div>
+    </div>
+</div>
+
+<script>
+let currentUserId = null;
+let currentAction = null;
+
+function showCreditModal(userId, action) {
+    currentUserId = userId;
+    currentAction = action;
+    const modal = document.getElementById('creditModal');
+    const title = document.getElementById('modalTitle');
+    const form = document.getElementById('creditForm');
+    const submitBtn = document.getElementById('submitBtn');
+    
+    if (action === 'add') {
+        title.textContent = 'Начислить кредиты';
+        submitBtn.textContent = 'Начислить';
+        submitBtn.className = 'btn btn-success';
+    } else {
+        title.textContent = 'Списать кредиты';
+        submitBtn.textContent = 'Списать';
+        submitBtn.className = 'btn btn-danger';
+    }
+    
+    form.action = action === 'add' 
+        ? `/users/${userId}/add_credits`
+        : `/users/${userId}/subtract_credits`;
+    
+    modal.style.display = 'block';
+}
+
+function closeCreditModal() {
+    document.getElementById('creditModal').style.display = 'none';
+    document.getElementById('creditForm').reset();
+    document.getElementById('creditMessage').innerHTML = '';
+}
+
+document.getElementById('creditForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const formData = new FormData(this);
+    const response = await fetch(this.action, {
+        method: 'POST',
+        body: formData
+    });
+    
+    const result = await response.json();
+    const messageDiv = document.getElementById('creditMessage');
+    
+    if (result.success) {
+        messageDiv.innerHTML = '<div class="success">Операция выполнена успешно!</div>';
+        setTimeout(() => {
+            location.reload();
+        }, 1000);
+    } else {
+        messageDiv.innerHTML = `<div class="error">${result.error || 'Ошибка'}</div>`;
+    }
+});
+
+// Закрытие по клику вне модального окна
+document.getElementById('creditModal').addEventListener('click', function(e) {
+    if (e.target === this) {
+        closeCreditModal();
+    }
+});
+</script>
+{% endblock %}

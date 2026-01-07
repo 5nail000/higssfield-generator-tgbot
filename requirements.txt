@@ -1,0 +1,9 @@
+python-telegram-bot>=22.0
+flask==3.0.0
+sqlalchemy>=2.0.36
+requests==2.31.0
+werkzeug==3.0.1
+higgsfield-client>=0.1.0
+Pillow>=10.0.0
+urllib3>=2.5.0,<3.0
+pytest>=7.0.0

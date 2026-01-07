@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+
+{% block title %}История действий{% endblock %}
+
+{% block content %}
+<h1>История действий</h1>
+
+<div class="card">
+    <form method="GET" action="{{ url_for('admin.history') }}" style="margin-bottom: 1rem;">
+        <div class="form-group" style="display: inline-block; margin-right: 1rem;">
+            <label for="user_id">Фильтр по пользователю:</label>
+            <select name="user_id" id="user_id" style="padding: 0.5rem;">
+                <option value="">Все пользователи</option>
+                {% for user in users %}
+                <option value="{{ user.id }}" {% if selected_user_id == user.id %}selected{% endif %}>
+                    {{ user.telegram_id }} ({{ user.username or 'N/A' }})
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+        <button type="submit" class="btn">Применить фильтр</button>
+    </form>
+    
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Пользователь</th>
+                <th>Тип действия</th>
+                <th>Кредиты</th>
+                <th>Время</th>
+                <th>Действия</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for action in actions %}
+            <tr>
+                <td>{{ action.id }}</td>
+                <td>{{ action.user_id }}</td>
+                <td>{{ action.action_type }}</td>
+                <td>{{ "%.2f"|format(action.credits_spent) }}</td>
+                <td>{{ action.timestamp.strftime('%d.%m.%Y %H:%M:%S') }}</td>
+                <td><a href="{{ url_for('admin.action_details', action_id=action.id) }}" class="btn">Детали</a></td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="6">Нет действий</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    
+    {% if total_pages > 1 %}
+    <div class="pagination">
+        {% for p in range(1, total_pages + 1) %}
+        <a href="{{ url_for('admin.history', page=p, user_id=selected_user_id) }}" {% if p == page %}class="active"{% endif %}>{{ p }}</a>
+        {% endfor %}
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

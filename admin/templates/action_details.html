@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+
+{% block title %}Детали действия #{{ action.id }}{% endblock %}
+
+{% block content %}
+<h1>Детали действия #{{ action.id }}</h1>
+
+<div class="card">
+    <h2>Информация о действии</h2>
+    <table>
+        <tr>
+            <th>ID:</th>
+            <td>{{ action.id }}</td>
+        </tr>
+        <tr>
+            <th>Пользователь:</th>
+            <td>
+                {% if user %}
+                Telegram ID: {{ user.telegram_id }}, Имя: {{ user.username or 'N/A' }}
+                {% else %}
+                ID: {{ action.user_id }}
+                {% endif %}
+            </td>
+        </tr>
+        <tr>
+            <th>Тип действия:</th>
+            <td>{{ action.action_type }}</td>
+        </tr>
+        <tr>
+            <th>Кредиты:</th>
+            <td>{{ "%.2f"|format(action.credits_spent) }}</td>
+        </tr>
+        <tr>
+            <th>Время:</th>
+            <td>{{ action.timestamp.strftime('%d.%m.%Y %H:%M:%S') }}</td>
+        </tr>
+    </table>
+</div>
+
+<div class="card">
+    <h2>Данные запроса</h2>
+    <pre style="background: #f8f9fa; padding: 1rem; border-radius: 4px; overflow-x: auto;">{{ request_data | tojson(indent=2) }}</pre>
+</div>
+
+<div class="card">
+    <h2>Данные ответа</h2>
+    <pre style="background: #f8f9fa; padding: 1rem; border-radius: 4px; overflow-x: auto;">{{ response_data | tojson(indent=2) }}</pre>
+</div>
+
+<a href="{{ url_for('admin.history') }}" class="btn">Назад к истории</a>
+{% endblock %}
