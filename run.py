@@ -47,10 +47,18 @@ def run_flask():
         raise
 
 
+# Глобальная переменная для хранения экземпляра бота
+_bot_instance = None
+
 def run_bot():
     """Запуск Telegram бота."""
+    global _bot_instance
     try:
         bot = TelegramBot()
+        _bot_instance = bot
+        # Устанавливаем экземпляр бота для использования в админке
+        from bot.bot_instance import set_bot_instance
+        set_bot_instance(bot.application.bot)
         logger.info("Запуск Telegram бота...")
         bot.run()
     except Exception as e:
@@ -82,6 +90,8 @@ def main():
         
     except KeyboardInterrupt:
         logger.info("Остановка приложения...")
+        # Graceful shutdown бота (уже обрабатывается в bot.run())
+        pass
     except Exception as e:
         logger.error(f"Критическая ошибка: {e}")
         raise

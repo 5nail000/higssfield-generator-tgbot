@@ -26,8 +26,10 @@ Notes:
 import os
 import json
 import time
-import requests
+import asyncio
+import httpx
 from typing import Optional, Dict, Any
+from datetime import datetime, timedelta
 from config.settings import settings
 from config.constants import (
     HIGGSFIELD_BASE_URL,
@@ -36,6 +38,8 @@ from config.constants import (
     POLL_INTERVAL_SECONDS
 )
 from utils.logger import logger
+from database.db_manager import db_manager
+from storage.file_manager import file_manager
 
 try:
     import higgsfield_client
@@ -83,6 +87,7 @@ class SeedreamAPIClient:
     def upload_file(self, file_path: str) -> str:
         """
         Загрузить файл в Higgsfield и получить URL.
+        Использует кэш для переиспользования ссылок на уже загруженные файлы.
         
         Args:
             file_path: Путь к файлу на локальном диске
@@ -91,20 +96,44 @@ class SeedreamAPIClient:
             URL загруженного файла в Higgsfield
         """
         try:
+            # Проверяем существование файла
+            if not os.path.exists(file_path):
+                logger.error(f"Файл не найден: {file_path}")
+                # Fallback: используем публичный URL локального сервера (даже если файл не существует)
+                return self._get_public_url(file_path)
+            
+            # Вычисляем хеш файла для проверки кэша
+            file_hash = file_manager.calculate_file_hash(file_path)
+            
+            # Проверяем кэш
+            cached_url = db_manager.get_file_cache(file_hash)
+            if cached_url:
+                logger.debug(f"Используется кэшированная ссылка для файла: {file_path[:50]}...")
+                return cached_url
+            
+            # Если кэша нет, загружаем файл
             if not HIGGSFIELD_CLIENT_AVAILABLE:
                 # Fallback: используем публичный URL локального сервера
-                logger.warning("higgsfield_client недоступен, используем публичный URL")
+                # НЕ сохраняем в кэш, так как это не реальная ссылка на Higgsfield
+                logger.warning("higgsfield_client недоступен, используем публичный URL (не кэшируется)")
                 return self._get_public_url(file_path)
             
             # Загружаем файл через официальный клиент
             logger.debug(f"Загрузка файла в Higgsfield: {file_path}")
             url = higgsfield_client.upload_file(file_path)
             logger.debug(f"Файл успешно загружен в Higgsfield, URL: {url}")
+            
+            # Сохраняем в кэш ТОЛЬКО реальные URL от Higgsfield (по умолчанию ссылка действительна 7 дней)
+            expires_at = datetime.utcnow() + timedelta(days=settings.FILE_CACHE_TTL_DAYS)
+            db_manager.save_file_cache(file_hash, url, expires_at)
+            logger.debug(f"Ссылка сохранена в кэш: file_hash={file_hash[:16]}..., expires_at={expires_at}")
+            
             return url
         except Exception as e:
             logger.error(f"Ошибка при загрузке файла в Higgsfield: {e}")
             # Fallback: используем публичный URL локального сервера
-            logger.warning("Используем публичный URL локального сервера как fallback")
+            # НЕ сохраняем в кэш, так как это не реальная ссылка на Higgsfield
+            logger.warning("Используем публичный URL локального сервера как fallback (не кэшируется)")
             return self._get_public_url(file_path)
     
     def _get_public_url(self, file_path: str) -> str:
@@ -118,15 +147,57 @@ class SeedreamAPIClient:
             Публичный URL файла
         """
         try:
+            # Проверяем, что путь указывает на файл, а не на директорию
+            from pathlib import Path
+            path_obj = Path(file_path)
+            if not path_obj.exists():
+                logger.warning(f"Файл не существует: {file_path}")
+                return file_path
+            if path_obj.is_dir():
+                logger.error(f"Передан путь к директории вместо файла: {file_path}")
+                return file_path
+            
             # Получаем user_id и filename из пути
-            # Формат: storage/users/{user_id}/{filename}
+            # Формат: storage/users/{user_id}/{filename} или storage/users/{user_id}/last_uploads/{filename}
+            # или storage/users/{user_id}/sets/{set_id}/{filename}
             parts = file_path.replace('\\', '/').split('/')
             if 'users' in parts:
                 user_idx = parts.index('users')
-                if user_idx + 2 < len(parts):
+                if user_idx + 1 < len(parts):
                     user_id = parts[user_idx + 1]
-                    filename = parts[user_idx + 2]
-                    public_url = f"http://localhost:5000/files/{user_id}/{filename}"
+                    
+                    # Проверяем, находится ли файл в поддиректории
+                    if user_idx + 4 < len(parts):
+                        # Файл в поддиректории с двумя уровнями: storage/users/{user_id}/sets/{set_id}/{filename}
+                        subdir1 = parts[user_idx + 2]  # sets
+                        subdir2 = parts[user_idx + 3]  # set_id
+                        filename = parts[user_idx + 4]
+                        if not filename:
+                            logger.error(f"Не удалось извлечь filename из пути: {file_path}")
+                            return file_path
+                        public_url = f"http://localhost:5000/files/{user_id}/{subdir1}/{subdir2}/{filename}"
+                    elif user_idx + 3 < len(parts):
+                        # Файл в поддиректории: storage/users/{user_id}/last_uploads/{filename}
+                        subdir = parts[user_idx + 2]  # last_uploads, results, или used
+                        filename = parts[user_idx + 3]
+                        # Проверяем, что filename не пустой
+                        if not filename:
+                            logger.error(f"Не удалось извлечь filename из пути: {file_path}")
+                            return file_path
+                        public_url = f"http://localhost:5000/files/{user_id}/{subdir}/{filename}"
+                    elif user_idx + 2 < len(parts):
+                        # Файл в корне пользователя: storage/users/{user_id}/{filename}
+                        filename = parts[user_idx + 2]
+                        # Проверяем, что filename не пустой и не является директорией
+                        if not filename or filename in ['last_uploads', 'results', 'used', 'sets']:
+                            logger.error(f"Неправильный filename из пути (возможно директория): {file_path}")
+                            return file_path
+                        public_url = f"http://localhost:5000/files/{user_id}/{filename}"
+                    else:
+                        # Не удалось извлечь - используем прямой путь
+                        logger.warning(f"Не удалось извлечь filename из пути: {file_path}")
+                        return file_path
+                    
                     logger.debug(f"Публичный URL файла: {public_url}")
                     return public_url
             
@@ -137,7 +208,7 @@ class SeedreamAPIClient:
             logger.error(f"Ошибка при получении публичного URL файла: {e}")
             raise
     
-    def generate(
+    async def generate(
         self,
         prompt: str,
         image_path: Optional[str] = None,
@@ -213,19 +284,19 @@ class SeedreamAPIClient:
             safe_headers = {k: '***' if k in ['hf-api-key', 'hf-secret'] else v for k, v in headers.items()}
             logger.debug(f"Заголовки запроса: {safe_headers}")
             
-            # Отправляем POST запрос
-            response = requests.post(
-                self.seedream_url,
-                json=payload,
-                headers=headers,
-                timeout=120  # Увеличенный таймаут для генерации
-            )
-            
-            # Проверяем статус ответа
-            response.raise_for_status()
-            
-            # Парсим JSON ответ
-            result = response.json()
+            # Отправляем POST запрос (асинхронный через httpx)
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                response = await client.post(
+                    self.seedream_url,
+                    json=payload,
+                    headers=headers
+                )
+                
+                # Проверяем статус ответа
+                response.raise_for_status()
+                
+                # Парсим JSON ответ
+                result = response.json()
             
             # Логируем полный ответ API
             logger.debug(f"Полный ответ API: {json.dumps(result, ensure_ascii=False, indent=2)}")
@@ -239,19 +310,21 @@ class SeedreamAPIClient:
             
             return result
             
-        except requests.exceptions.RequestException as e:
+        except httpx.HTTPStatusError as e:
             logger.error(f"Ошибка HTTP при запросе к Seedream API: {e}")
-            if hasattr(e, 'response') and e.response is not None:
-                logger.error(f"Статус ответа: {e.response.status_code}")
-                logger.error(f"Тело ответа: {e.response.text}")
+            logger.error(f"Статус ответа: {e.response.status_code}")
+            logger.error(f"Тело ответа: {e.response.text}")
+            raise Exception(f"Ошибка при запросе к Seedream API: {str(e)}")
+        except httpx.RequestError as e:
+            logger.error(f"Ошибка запроса к Seedream API: {e}")
             raise Exception(f"Ошибка при запросе к Seedream API: {str(e)}")
         except Exception as e:
             logger.error(f"Ошибка при генерации через Seedream API: {e}")
             raise
     
-    def get_request_status(self, request_id: str) -> Dict[str, Any]:
+    async def get_request_status(self, request_id: str) -> Dict[str, Any]:
         """
-        Получить статус запроса по ID.
+        Получить статус запроса по ID (асинхронная версия).
         
         Args:
             request_id: ID запроса
@@ -267,33 +340,35 @@ class SeedreamAPIClient:
             
             headers = self._get_headers()
             
-            response = requests.get(
-                status_url,
-                headers=headers,
-                timeout=30
-            )
-            
-            response.raise_for_status()
-            result = response.json()
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    status_url,
+                    headers=headers
+                )
+                
+                response.raise_for_status()
+                result = response.json()
             
             status = result.get('status', 'unknown')
             logger.info(f"По запросу: {request_id} статус: {status}")
             
             return result
             
-        except requests.exceptions.RequestException as e:
+        except httpx.HTTPStatusError as e:
             logger.error(f"Ошибка HTTP при проверке статуса: {e}")
-            if hasattr(e, 'response') and e.response is not None:
-                logger.error(f"Статус ответа: {e.response.status_code}")
-                logger.error(f"Тело ответа: {e.response.text}")
+            logger.error(f"Статус ответа: {e.response.status_code}")
+            logger.error(f"Тело ответа: {e.response.text}")
+            raise Exception(f"Ошибка при проверке статуса: {str(e)}")
+        except httpx.RequestError as e:
+            logger.error(f"Ошибка запроса при проверке статуса: {e}")
             raise Exception(f"Ошибка при проверке статуса: {str(e)}")
         except Exception as e:
             logger.error(f"Ошибка при проверке статуса запроса: {e}")
             raise
     
-    def wait_for_completion(self, request_id: str, max_wait_time: int = None, poll_interval: int = 5) -> Dict[str, Any]:
+    async def wait_for_completion(self, request_id: str, max_wait_time: int = None, poll_interval: int = 5) -> Dict[str, Any]:
         """
-        Ожидать завершения задачи с периодическим опросом статуса.
+        Ожидать завершения задачи с периодическим опросом статуса (асинхронная версия).
         
         Args:
             request_id: ID запроса
@@ -303,6 +378,8 @@ class SeedreamAPIClient:
         Returns:
             Словарь с результатом генерации
         """
+        import asyncio
+        
         if max_wait_time is None:
             max_wait_time = settings.API_GENERATION_TIMEOUT
         
@@ -312,7 +389,8 @@ class SeedreamAPIClient:
         
         while True:
             try:
-                status_result = self.get_request_status(request_id)
+                # Асинхронный HTTP запрос через httpx
+                status_result = await self.get_request_status(request_id)
                 
                 status = status_result.get('status', '').lower()
                 if not status and 'jobs' in status_result:
@@ -356,15 +434,16 @@ class SeedreamAPIClient:
                     logger.error(f"⏱️ Превышено время ожидания для задачи {request_id}: {elapsed_time:.2f} сек")
                     raise TimeoutError(f"Превышено время ожидания генерации: {max_wait_time} сек")
                 
-                # Ждем перед следующим опросом
-                time.sleep(poll_interval)
+                # Используем asyncio.sleep вместо time.sleep для неблокирующего ожидания
+                await asyncio.sleep(poll_interval)
                 
-            except TimeoutError:
+            except (TimeoutError, RuntimeError, ValueError):
+                # Пробрасываем критические ошибки (таймаут, failed, nsfw, canceled)
                 raise
             except Exception as e:
                 logger.error(f"Ошибка при опросе статуса задачи {request_id}: {e}")
-                # Продолжаем опрос, если это не критическая ошибка
-                time.sleep(poll_interval)
+                # Продолжаем опрос только для некритических ошибок (например, временные сетевые проблемы)
+                await asyncio.sleep(poll_interval)
 
 
 class NanoBananaAPIClient:
@@ -414,6 +493,7 @@ class NanoBananaAPIClient:
     def upload_file(self, file_path: str) -> str:
         """
         Загрузить файл в Higgsfield и получить URL.
+        Использует кэш для переиспользования ссылок на уже загруженные файлы.
         
         Args:
             file_path: Путь к файлу на локальном диске
@@ -422,20 +502,44 @@ class NanoBananaAPIClient:
             URL загруженного файла в Higgsfield
         """
         try:
+            # Проверяем существование файла
+            if not os.path.exists(file_path):
+                logger.error(f"Файл не найден: {file_path}")
+                # Fallback: используем публичный URL локального сервера (даже если файл не существует)
+                return self._get_public_url(file_path)
+            
+            # Вычисляем хеш файла для проверки кэша
+            file_hash = file_manager.calculate_file_hash(file_path)
+            
+            # Проверяем кэш
+            cached_url = db_manager.get_file_cache(file_hash)
+            if cached_url:
+                logger.debug(f"Используется кэшированная ссылка для файла: {file_path[:50]}...")
+                return cached_url
+            
+            # Если кэша нет, загружаем файл
             if not HIGGSFIELD_CLIENT_AVAILABLE:
                 # Fallback: используем публичный URL локального сервера
-                logger.warning("higgsfield_client недоступен, используем публичный URL")
+                # НЕ сохраняем в кэш, так как это не реальная ссылка на Higgsfield
+                logger.warning("higgsfield_client недоступен, используем публичный URL (не кэшируется)")
                 return self._get_public_url(file_path)
             
             # Загружаем файл через официальный клиент
             logger.debug(f"Загрузка файла в Higgsfield: {file_path}")
             url = higgsfield_client.upload_file(file_path)
             logger.debug(f"Файл успешно загружен в Higgsfield, URL: {url}")
+            
+            # Сохраняем в кэш ТОЛЬКО реальные URL от Higgsfield (по умолчанию ссылка действительна 7 дней)
+            expires_at = datetime.utcnow() + timedelta(days=settings.FILE_CACHE_TTL_DAYS)
+            db_manager.save_file_cache(file_hash, url, expires_at)
+            logger.debug(f"Ссылка сохранена в кэш: file_hash={file_hash[:16]}..., expires_at={expires_at}")
+            
             return url
         except Exception as e:
             logger.error(f"Ошибка при загрузке файла в Higgsfield: {e}")
             # Fallback: используем публичный URL локального сервера
-            logger.warning("Используем публичный URL локального сервера как fallback")
+            # НЕ сохраняем в кэш, так как это не реальная ссылка на Higgsfield
+            logger.warning("Используем публичный URL локального сервера как fallback (не кэшируется)")
             return self._get_public_url(file_path)
     
     def _get_public_url(self, file_path: str) -> str:
@@ -449,15 +553,57 @@ class NanoBananaAPIClient:
             Публичный URL файла
         """
         try:
+            # Проверяем, что путь указывает на файл, а не на директорию
+            from pathlib import Path
+            path_obj = Path(file_path)
+            if not path_obj.exists():
+                logger.warning(f"Файл не существует: {file_path}")
+                return file_path
+            if path_obj.is_dir():
+                logger.error(f"Передан путь к директории вместо файла: {file_path}")
+                return file_path
+            
             # Получаем user_id и filename из пути
-            # Формат: storage/users/{user_id}/{filename}
+            # Формат: storage/users/{user_id}/{filename} или storage/users/{user_id}/last_uploads/{filename}
+            # или storage/users/{user_id}/sets/{set_id}/{filename}
             parts = file_path.replace('\\', '/').split('/')
             if 'users' in parts:
                 user_idx = parts.index('users')
-                if user_idx + 2 < len(parts):
+                if user_idx + 1 < len(parts):
                     user_id = parts[user_idx + 1]
-                    filename = parts[user_idx + 2]
-                    public_url = f"http://localhost:5000/files/{user_id}/{filename}"
+                    
+                    # Проверяем, находится ли файл в поддиректории
+                    if user_idx + 4 < len(parts):
+                        # Файл в поддиректории с двумя уровнями: storage/users/{user_id}/sets/{set_id}/{filename}
+                        subdir1 = parts[user_idx + 2]  # sets
+                        subdir2 = parts[user_idx + 3]  # set_id
+                        filename = parts[user_idx + 4]
+                        if not filename:
+                            logger.error(f"Не удалось извлечь filename из пути: {file_path}")
+                            return file_path
+                        public_url = f"http://localhost:5000/files/{user_id}/{subdir1}/{subdir2}/{filename}"
+                    elif user_idx + 3 < len(parts):
+                        # Файл в поддиректории: storage/users/{user_id}/last_uploads/{filename}
+                        subdir = parts[user_idx + 2]  # last_uploads, results, или used
+                        filename = parts[user_idx + 3]
+                        # Проверяем, что filename не пустой
+                        if not filename:
+                            logger.error(f"Не удалось извлечь filename из пути: {file_path}")
+                            return file_path
+                        public_url = f"http://localhost:5000/files/{user_id}/{subdir}/{filename}"
+                    elif user_idx + 2 < len(parts):
+                        # Файл в корне пользователя: storage/users/{user_id}/{filename}
+                        filename = parts[user_idx + 2]
+                        # Проверяем, что filename не пустой и не является директорией
+                        if not filename or filename in ['last_uploads', 'results', 'used', 'sets']:
+                            logger.error(f"Неправильный filename из пути (возможно директория): {file_path}")
+                            return file_path
+                        public_url = f"http://localhost:5000/files/{user_id}/{filename}"
+                    else:
+                        # Не удалось извлечь - используем прямой путь
+                        logger.warning(f"Не удалось извлечь filename из пути: {file_path}")
+                        return file_path
+                    
                     logger.debug(f"Публичный URL файла: {public_url}")
                     return public_url
             
@@ -468,7 +614,7 @@ class NanoBananaAPIClient:
             logger.error(f"Ошибка при получении публичного URL файла: {e}")
             raise
     
-    def generate(
+    async def generate(
         self,
         prompt: str,
         image_path: Optional[str] = None,
@@ -592,19 +738,19 @@ class NanoBananaAPIClient:
             safe_headers = {k: '***' if k in ['hf-api-key', 'hf-secret'] else v for k, v in headers.items()}
             logger.debug(f"Заголовки запроса: {safe_headers}")
             
-            # Отправляем POST запрос
-            response = requests.post(
-                url,
-                json=payload,
-                headers=headers,
-                timeout=120  # Увеличенный таймаут для генерации
-            )
-            
-            # Проверяем статус ответа
-            response.raise_for_status()
-            
-            # Парсим JSON ответ
-            result = response.json()
+            # Отправляем POST запрос (асинхронный через httpx)
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                response = await client.post(
+                    url,
+                    json=payload,
+                    headers=headers
+                )
+                
+                # Проверяем статус ответа
+                response.raise_for_status()
+                
+                # Парсим JSON ответ
+                result = response.json()
             
             # Логируем полный ответ API
             logger.debug(f"Полный ответ API: {json.dumps(result, ensure_ascii=False, indent=2)}")
@@ -618,11 +764,11 @@ class NanoBananaAPIClient:
             
             return result
             
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             error_msg = f"HTTP ошибка: {e.response.status_code} - {e.response.text}"
             logger.error(error_msg)
             raise Exception(f"Ошибка API: {error_msg}")
-        except requests.exceptions.RequestException as e:
+        except httpx.RequestError as e:
             error_msg = f"Ошибка запроса: {str(e)}"
             logger.error(error_msg)
             raise Exception(f"Ошибка запроса: {error_msg}")
@@ -630,9 +776,9 @@ class NanoBananaAPIClient:
             logger.error(f"Ошибка при обработке запроса: {e}")
             raise
     
-    def get_request_status(self, request_id: str) -> Dict[str, Any]:
+    async def get_request_status(self, request_id: str) -> Dict[str, Any]:
         """
-        Получить статус запроса по ID.
+        Получить статус запроса по ID (асинхронная версия).
         
         Args:
             request_id: ID запроса/задачи
@@ -650,14 +796,14 @@ class NanoBananaAPIClient:
             # Для проверки статуса используем заголовки с авторизацией
             headers = self._get_headers(with_auth=True)
             
-            response = requests.get(
-                status_url,
-                headers=headers,
-                timeout=30
-            )
-            
-            response.raise_for_status()
-            result = response.json()
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    status_url,
+                    headers=headers
+                )
+                
+                response.raise_for_status()
+                result = response.json()
             
             # Определяем статус (может быть в корне или в jobs[0])
             status = result.get('status', 'unknown')
@@ -670,11 +816,11 @@ class NanoBananaAPIClient:
             
             return result
             
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             error_msg = f"HTTP ошибка при проверке статуса: {e.response.status_code} - {e.response.text}"
             logger.error(error_msg)
             raise Exception(f"Ошибка API: {error_msg}")
-        except requests.exceptions.RequestException as e:
+        except httpx.RequestError as e:
             error_msg = f"Ошибка запроса статуса: {str(e)}"
             logger.error(error_msg)
             raise Exception(f"Ошибка запроса: {error_msg}")
@@ -682,9 +828,9 @@ class NanoBananaAPIClient:
             logger.error(f"Ошибка при проверке статуса: {e}")
             raise
     
-    def wait_for_completion(self, request_id: str, max_wait_time: int = None, poll_interval: int = 5) -> Dict[str, Any]:
+    async def wait_for_completion(self, request_id: str, max_wait_time: int = None, poll_interval: int = 5) -> Dict[str, Any]:
         """
-        Ожидать завершения задачи с периодическим опросом статуса.
+        Ожидать завершения задачи с периодическим опросом статуса (асинхронная версия).
         
         Args:
             request_id: ID запроса/задачи
@@ -695,6 +841,7 @@ class NanoBananaAPIClient:
             Финальный результат задачи
         """
         import time
+        import asyncio
         
         # Используем значение из конфига, если не указано явно
         if max_wait_time is None:
@@ -706,8 +853,8 @@ class NanoBananaAPIClient:
         
         while True:
             try:
-                # Проверяем статус через GET запрос на /requests/{id}/status
-                status_result = self.get_request_status(request_id)
+                # Асинхронный HTTP запрос через httpx
+                status_result = await self.get_request_status(request_id)
                 
                 # Проверяем статус из ответа
                 # Структура ответа: {"status": "queued", "request_id": "...", ...}
@@ -781,13 +928,12 @@ class NanoBananaAPIClient:
                 if elapsed_time >= max_wait_time:
                     raise TimeoutError(f"Превышено время ожидания ({max_wait_time} секунд) для задачи {request_id}")
                 
-                # Ждем перед следующим опросом
+                # Используем asyncio.sleep вместо time.sleep для неблокирующего ожидания
                 logger.debug(f"Задача {request_id} в статусе '{status}', ждем {poll_interval} секунд... (прошло {elapsed_time:.1f} сек)")
-                time.sleep(poll_interval)
+                await asyncio.sleep(poll_interval)
                 
-            except TimeoutError:
-                raise
-            except RuntimeError:
+            except (TimeoutError, RuntimeError, ValueError):
+                # Пробрасываем критические ошибки (таймаут, failed, nsfw, canceled)
                 raise
             except Exception as e:
                 # Если ошибка при проверке статуса, логируем и продолжаем
@@ -798,29 +944,13 @@ class NanoBananaAPIClient:
                 if elapsed_time >= max_wait_time:
                     raise TimeoutError(f"Превышено время ожидания ({max_wait_time} секунд) для задачи {request_id}")
                 
-                time.sleep(poll_interval) # Ждем перед повторной попыткой
+                await asyncio.sleep(poll_interval)  # Ждем перед повторной попыткой
                 # Продолжаем цикл, чтобы повторить запрос
-
-
-class OtherAPIClient:
-    """Заглушка для других API клиентов."""
-    
-    def __init__(self):
-        """Инициализация заглушки."""
-        logger.debug("OtherAPIClient инициализирован (заглушка)")
-    
-    def generate(self, *args, **kwargs) -> Dict[str, Any]:
-        """Заглушка для генерации."""
-        return {
-            "status": "not_implemented",
-            "message": "Этот маршрут еще не реализован"
-        }
 
 
 # Создаем глобальные экземпляры API клиентов
 nanobanana_client = None
 seedream_client = None
-other_client = OtherAPIClient()
 
 def get_nanobanana_client():
     """Получить экземпляр NanoBanana клиента."""
@@ -858,7 +988,5 @@ def get_api_client(route: str):
         except Exception as e:
             logger.error(f"Ошибка при получении Seedream клиента: {e}")
             raise Exception(f"Сервис Seedream недоступен: {str(e)}")
-    elif route == "other":
-        return other_client
     else:
-        raise ValueError(f"Неизвестный маршрут: {route}")
+        raise ValueError(f"Неизвестный маршрут: {route}. Доступные маршруты: 'nanobanana', 'seedream'")

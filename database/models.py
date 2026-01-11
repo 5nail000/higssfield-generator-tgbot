@@ -52,6 +52,7 @@ class User(Base):
     telegram_id = Column(Integer, unique=True, nullable=False, index=True)
     username = Column(String(255), nullable=True)
     credits = Column(Float, default=0.0, nullable=False)
+    selected_mode = Column(String(50), default='seedream', nullable=False)  # Режим генерации по умолчанию: 'nanobanana' или 'seedream'
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     
@@ -151,3 +152,91 @@ class CreditRequest(Base):
     
     def __repr__(self):
         return f"<CreditRequest(id={self.id}, user_id={self.user_id}, amount={self.amount}, status={self.status})>"
+
+
+class FileCache(Base):
+    """
+    Модель кэша файлов и ссылок на загруженные файлы в Higgsfield.
+    
+    Хранит хеши файлов, ссылки на загруженные файлы в Higgsfield и время истечения ссылок.
+    Позволяет переиспользовать ссылки на загруженные файлы, пока они действительны.
+    
+    Attributes:
+        id: Внутренний ID записи (primary key)
+        file_hash: SHA256 хеш файла (unique, indexed)
+        higgsfield_url: URL загруженного файла в Higgsfield
+        expires_at: Дата истечения ссылки (indexed)
+        created_at: Дата создания записи (auto)
+        last_used_at: Дата последнего использования ссылки
+    """
+    __tablename__ = 'file_cache'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    file_hash = Column(String(64), unique=True, nullable=False, index=True)  # SHA256 хеш
+    higgsfield_url = Column(Text, nullable=False)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_used_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    
+    def __repr__(self):
+        return f"<FileCache(id={self.id}, file_hash={self.file_hash[:16]}..., expires_at={self.expires_at})>"
+
+
+class FaceReferenceSet(Base):
+    """
+    Модель наборов референсных изображений для лиц.
+    
+    Позволяет пользователям создавать именованные наборы фотографий для переиспользования.
+    
+    Attributes:
+        id: Внутренний ID набора (primary key)
+        user_id: ID пользователя (foreign key, indexed)
+        name: Название набора
+        created_at: Дата создания набора (indexed)
+        updated_at: Дата последнего обновления (auto, onupdate)
+        user: Связь с пользователем (many-to-one)
+        images: Связь с изображениями набора (one-to-many)
+    """
+    __tablename__ = 'face_reference_sets'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    
+    # Связи
+    user = relationship("User")
+    images = relationship("FaceReferenceSetImage", back_populates="reference_set", cascade="all, delete-orphan")
+    
+    def __repr__(self):
+        return f"<FaceReferenceSet(id={self.id}, user_id={self.user_id}, name={self.name})>"
+
+
+class FaceReferenceSetImage(Base):
+    """
+    Модель изображений в наборе референсов.
+    
+    Связывает набор референсов с файлами изображений.
+    
+    Attributes:
+        id: Внутренний ID записи (primary key)
+        set_id: ID набора референсов (foreign key, indexed)
+        file_path: Путь к файлу изображения
+        file_hash: SHA256 хеш файла (для кэширования)
+        created_at: Дата добавления изображения (auto)
+        reference_set: Связь с набором референсов (many-to-one)
+    """
+    __tablename__ = 'face_reference_set_images'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    set_id = Column(Integer, ForeignKey('face_reference_sets.id'), nullable=False, index=True)
+    file_path = Column(String(500), nullable=False)
+    file_hash = Column(String(64), nullable=True, index=True)  # SHA256 хеш для кэширования
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    
+    # Связь с набором
+    reference_set = relationship("FaceReferenceSet", back_populates="images")
+    
+    def __repr__(self):
+        return f"<FaceReferenceSetImage(id={self.id}, set_id={self.set_id}, file_path={self.file_path})>"

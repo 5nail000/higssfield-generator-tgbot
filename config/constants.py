@@ -42,7 +42,8 @@ CREDIT_REQUEST_AMOUNT: float = 2500.0
 MAX_PHOTOS_NANOBANANA: int = 8
 
 # Максимальное количество фото для режима Seedream 4.5
-MAX_PHOTOS_SEEDREAM: int = 14
+# Ограничено 9 из-за лимита Telegram (не более 9 фото в одном сообщении)
+MAX_PHOTOS_SEEDREAM: int = 9
 
 # Максимальный размер файла (по умолчанию 10MB)
 # Может быть переопределен в config.json
@@ -90,11 +91,16 @@ MODE_MAX_PHOTOS = {
     MODE_SEEDREAM: MAX_PHOTOS_SEEDREAM,
 }
 
-# Стоимость генерации в реальной валюте (USD) для разных моделей
+# Стоимость генерации в реальных кредитах Higgsfield для разных моделей
+# Примечание: Название MODEL_COST_USD оставлено для совместимости, но хранятся кредиты Higgsfield
 MODEL_COST_USD = {
-    MODE_NANOBANANA: 0.62,
-    MODE_SEEDREAM: 0.64,
+    MODE_NANOBANANA: 0.62,  # кредитов Higgsfield
+    MODE_SEEDREAM: 0.64,    # кредитов Higgsfield
 }
+
+# Курс конвертации: 1 USD = X реальных кредитов Higgsfield
+# Используется для конвертации кредитов в USD (кредиты / курс = USD)
+HIGGSFIELD_CREDITS_PER_USD: float = 16.0
 
 
 # ============================================================================
@@ -138,12 +144,27 @@ def get_mode_display_name(mode: str) -> str:
 
 def get_model_cost_usd(mode: str) -> float:
     """
-    Получить стоимость генерации в USD для указанного режима.
+    Получить стоимость генерации в реальных кредитах Higgsfield для указанного режима.
+    
+    Примечание: Название функции оставлено для совместимости, но возвращаются кредиты Higgsfield.
     
     Args:
         mode: Идентификатор режима (MODE_NANOBANANA или MODE_SEEDREAM)
     
     Returns:
-        Стоимость в USD или 0.0, если режим не найден
+        Стоимость в кредитах Higgsfield или 0.0, если режим не найден
     """
     return MODEL_COST_USD.get(mode, 0.0)
+
+
+def higgsfield_credits_to_usd(credits: float) -> float:
+    """
+    Конвертировать реальные кредиты Higgsfield в USD по текущему курсу.
+    
+    Args:
+        credits: Сумма в кредитах Higgsfield
+    
+    Returns:
+        Сумма в USD
+    """
+    return credits / HIGGSFIELD_CREDITS_PER_USD

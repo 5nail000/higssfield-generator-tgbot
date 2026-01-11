@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+
+{% block title %}Отправить сообщение{% endblock %}
+
+{% block content %}
+<div class="container">
+    <h1>📨 Отправить сообщение пользователю</h1>
+    
+    <div class="card" style="margin-bottom: 20px;">
+        <h3>Информация о пользователе</h3>
+        <p><strong>Telegram ID:</strong> {{ user.telegram_id }}</p>
+        <p><strong>Username:</strong> {{ user.username or 'Не указан' }}</p>
+        <p><strong>Баланс:</strong> {{ "%.2f"|format(user.credits) }} кредитов</p>
+    </div>
+    
+    {% if error %}
+    <div class="alert" style="background: #f8d7da; color: #721c24; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
+        <strong>Ошибка:</strong> {{ error }}
+    </div>
+    {% endif %}
+    
+    <div class="card">
+        <h2>Форма отправки</h2>
+        <form method="POST" enctype="multipart/form-data" style="display: flex; flex-direction: column; gap: 15px;">
+            <div>
+                <label for="message" style="display: block; margin-bottom: 5px; font-weight: bold;">
+                    Текст сообщения:
+                </label>
+                <textarea 
+                    id="message" 
+                    name="message" 
+                    rows="5" 
+                    style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; font-family: inherit;"
+                    placeholder="Введите текст сообщения..."></textarea>
+            </div>
+            
+            <div>
+                <label for="file" style="display: block; margin-bottom: 5px; font-weight: bold;">
+                    Файл/Фото (опционально):
+                </label>
+                <input 
+                    type="file" 
+                    id="file" 
+                    name="file" 
+                    accept="image/*,.pdf,.doc,.docx,.txt"
+                    style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px;">
+                <small style="color: #666; display: block; margin-top: 5px;">
+                    Поддерживаются изображения (отправляются как фото) и другие файлы (отправляются как документы)
+                </small>
+            </div>
+            
+            <div style="display: flex; gap: 10px;">
+                <button type="submit" class="btn btn-primary" style="flex: 1;">
+                    📤 Отправить сообщение
+                </button>
+                <a href="{{ url_for('admin.users') }}" class="btn btn-secondary">
+                    ← Назад
+                </a>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}

@@ -60,7 +60,12 @@
     <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-top: 1rem;">
         <a href="{{ url_for('admin.users') }}" class="btn btn-primary">Управление пользователями</a>
         <a href="{{ url_for('admin.history') }}" class="btn btn-primary">История действий</a>
-        <a href="{{ url_for('admin.metrics') }}" class="btn btn-primary">📊 Метрики по моделям</a>
+        <a href="{{ url_for('admin.metrics') }}" class="btn btn-primary">📊 Метрики</a>
+    </div>
+    
+    <div class="card" style="margin-top: 1rem;">
+        <h2>📨 Отправка сообщений</h2>
+        <p>Для отправки сообщений пользователям перейдите в раздел "Управление пользователями" и нажмите кнопку "📨 Сообщение" рядом с нужным пользователем.</p>
     </div>
 </div>
 {% endblock %}

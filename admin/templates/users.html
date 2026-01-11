@@ -26,6 +26,7 @@
                 <td>{{ "%.2f"|format(user.credits) }}</td>
                 <td>{{ user.created_at.strftime('%d.%m.%Y %H:%M') }}</td>
                 <td>
+                    <a href="{{ url_for('admin.send_message', user_id=user.id) }}" class="btn btn-primary" style="margin-bottom: 5px;">📨 Сообщение</a>
                     <button onclick="showCreditModal({{ user.id }}, 'add')" class="btn btn-success">+ Кредиты</button>
                     <button onclick="showCreditModal({{ user.id }}, 'subtract')" class="btn btn-danger">- Кредиты</button>
                 </td>

@@ -27,9 +27,13 @@ from admin.auth import login_required, login_user, logout_user
 from database.db_manager import db_manager
 from storage.file_manager import file_manager
 from utils.logger import logger
-from config.constants import MODE_NANOBANANA, MODE_SEEDREAM, get_mode_display_name
+from config.constants import MODE_NANOBANANA, MODE_SEEDREAM, get_mode_display_name, higgsfield_credits_to_usd
 from datetime import datetime
 import json
+import asyncio
+import io
+from pathlib import Path
+from telegram import InputFile
 
 admin_bp = Blueprint('admin', __name__)
 
@@ -201,21 +205,91 @@ def action_details(action_id):
     )
 
 
+@admin_bp.route('/metrics')
+@login_required
+def metrics():
+    """Страница метрик по моделям генерации."""
+    period = request.args.get('period', 'all')
+    user_id = request.args.get('user_id', type=int)
+    
+    # Получаем статистику по моделям
+    stats = db_manager.get_model_statistics(period=period, user_id=user_id)
+    
+    # Получаем статистику по пользователям (траты в кредитах)
+    users_stats = db_manager.get_users_credits_statistics(period=period)
+    
+    # Получаем список всех пользователей для фильтра
+    all_users = db_manager.get_all_users()
+    
+    # Словарь для отображения имен моделей
+    model_display_names = {
+        MODE_NANOBANANA: get_mode_display_name(MODE_NANOBANANA),
+        MODE_SEEDREAM: get_mode_display_name(MODE_SEEDREAM)
+    }
+    
+    return render_template(
+        'metrics.html',
+        stats=stats,
+        users_stats=users_stats,
+        period=period,
+        user_id=user_id,
+        all_users=all_users,
+        model_display_names=model_display_names,
+        credits_to_usd=higgsfield_credits_to_usd
+    )
+
+
+@admin_bp.route('/api/metrics')
+@login_required
+def api_metrics():
+    """API endpoint для получения метрик в JSON формате."""
+    period = request.args.get('period', 'all')
+    user_id = request.args.get('user_id', type=int)
+    
+    stats = db_manager.get_model_statistics(period=period, user_id=user_id)
+    
+    return jsonify(stats)
+
+
 @admin_bp.route('/files/<int:user_id>/<path:filename>')
 def serve_file(user_id, filename):
     """
     Отдача файлов пользователей.
     Публичный доступ для API cloud.higgsfield.ai.
-    Поддерживает файлы из основной папки и из папки results.
+    Поддерживает файлы из основной папки, из папки results, last_uploads и sets/{set_id}/.
     """
+    # Проверяем, не запрашивается ли директория (неправильный запрос)
+    if filename in ['last_uploads', 'results', 'used', 'sets']:
+        logger.warning(f"Попытка доступа к директории вместо файла: /files/{user_id}/{filename}")
+        return "Директория недоступна", 404
+    
+    # Проверяем, не запрашивается ли файл из папки sets/{set_id}/
+    if filename.startswith('sets/'):
+        # Формат: sets/{set_id}/{filename}
+        parts = filename.split('/', 2)
+        if len(parts) == 3:
+            set_id = parts[1]
+            actual_filename = parts[2]
+            set_dir = file_manager.get_set_directory(user_id, int(set_id))
+            file_path = set_dir / actual_filename
+            if file_path.exists() and file_path.is_file():
+                return send_from_directory(set_dir, actual_filename)
     # Проверяем, не запрашивается ли файл из папки results
-    if filename.startswith('results/'):
+    elif filename.startswith('results/'):
         # Убираем префикс results/
         actual_filename = filename.replace('results/', '', 1)
         results_dir = file_manager.get_results_directory(user_id)
         file_path = results_dir / actual_filename
         if file_path.exists() and file_path.is_file():
             return send_from_directory(results_dir, actual_filename)
+    # Проверяем, не запрашивается ли файл из папки last_uploads
+    elif filename.startswith('last_uploads/'):
+        # Убираем префикс last_uploads/
+        actual_filename = filename.replace('last_uploads/', '', 1)
+        last_uploads_dir = file_manager.get_last_uploads_directory(user_id)
+        file_path = last_uploads_dir / actual_filename
+        if file_path.exists() and file_path.is_file():
+            return send_from_directory(last_uploads_dir, actual_filename)
     else:
         # Обычный файл из основной папки пользователя
         file_path = file_manager.get_file_path(user_id, filename)
@@ -223,3 +297,97 @@ def serve_file(user_id, filename):
             return send_from_directory(file_path.parent, filename)
     
     return "Файл не найден", 404
+
+
+@admin_bp.route('/send_message/<int:user_id>', methods=['GET', 'POST'])
+@login_required
+def send_message(user_id):
+    """Страница отправки сообщения пользователю."""
+    user = db_manager.get_user_by_id(user_id)
+    if not user:
+        return "Пользователь не найден", 404
+    
+    if request.method == 'POST':
+        message_text = request.form.get('message', '').strip()
+        file = request.files.get('file')
+        
+        if not message_text and not file:
+            return render_template(
+                'send_message.html',
+                user=user,
+                error='Необходимо указать текст сообщения или загрузить файл'
+            )
+        
+        try:
+            from bot.bot_instance import get_bot_instance
+            bot = get_bot_instance()
+            
+            # Отправляем сообщение асинхронно
+            async def send():
+                try:
+                    if file:
+                        # Отправляем файл
+                        file_data = file.read()
+                        file_ext = Path(file.filename).suffix.lower() if file.filename else ''
+                        
+                        # Определяем тип файла
+                        if file_ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']:
+                            # Отправляем как фото
+                            if message_text:
+                                await bot.send_photo(
+                                    chat_id=user.telegram_id,
+                                    photo=InputFile(io.BytesIO(file_data), filename=file.filename),
+                                    caption=message_text
+                                )
+                            else:
+                                await bot.send_photo(
+                                    chat_id=user.telegram_id,
+                                    photo=InputFile(io.BytesIO(file_data), filename=file.filename)
+                                )
+                        else:
+                            # Отправляем как документ
+                            if message_text:
+                                await bot.send_document(
+                                    chat_id=user.telegram_id,
+                                    document=InputFile(io.BytesIO(file_data), filename=file.filename),
+                                    caption=message_text
+                                )
+                            else:
+                                await bot.send_document(
+                                    chat_id=user.telegram_id,
+                                    document=InputFile(io.BytesIO(file_data), filename=file.filename)
+                                )
+                    else:
+                        # Отправляем только текст
+                        await bot.send_message(
+                            chat_id=user.telegram_id,
+                            text=message_text
+                        )
+                    return True, None
+                except Exception as e:
+                    return False, str(e)
+            
+            # Запускаем асинхронную функцию
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            success, error = loop.run_until_complete(send())
+            loop.close()
+            
+            if success:
+                logger.info(f"Админ отправил сообщение пользователю {user_id} (telegram_id: {user.telegram_id})")
+                return redirect(url_for('admin.users'))
+            else:
+                return render_template(
+                    'send_message.html',
+                    user=user,
+                    error=f'Ошибка отправки: {error}'
+                )
+        except Exception as e:
+            logger.error(f"Ошибка при отправке сообщения пользователю {user_id}: {e}", exc_info=True)
+            return render_template(
+                'send_message.html',
+                user=user,
+                error=f'Ошибка: {str(e)}'
+            )
+    
+    return render_template('send_message.html', user=user)

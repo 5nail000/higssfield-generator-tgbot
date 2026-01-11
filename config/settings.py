@@ -39,7 +39,7 @@ class Settings:
     
     Attributes:
         TELEGRAM_BOT_TOKEN: Токен Telegram бота
-        TELEGRAM_BOT_ADMIN_ID: ID администратора в Telegram
+        TELEGRAM_BOT_ADMIN_IDS: Список ID администраторов в Telegram
         HIGGSFIELD_API_KEY: API ключ для доступа к Higgsfield
         HIGGSFIELD_API_KEY_SECRET: Секретный ключ API
         HIGGSFIELD_API_URL: Базовый URL API (устаревший, не используется)
@@ -80,13 +80,32 @@ class Settings:
         """Применить настройки из конфига."""
         # Telegram Bot
         self.TELEGRAM_BOT_TOKEN: str = self._config.get("telegram_bot_token", "")
-        self.TELEGRAM_BOT_ADMIN_ID: int = int(self._config.get("telegram_bot_admin_id", "0"))
+        
+        # Поддержка старого формата (один ID) и нового (список)
+        admin_ids = self._config.get("telegram_bot_admin_ids")
+        if admin_ids is None:
+            # Обратная совместимость: проверяем старое поле
+            old_admin_id = self._config.get("telegram_bot_admin_id")
+            if old_admin_id:
+                self.TELEGRAM_BOT_ADMIN_IDS: list = [int(old_admin_id)]
+            else:
+                self.TELEGRAM_BOT_ADMIN_IDS: list = []
+        else:
+            # Новый формат: список ID
+            if isinstance(admin_ids, list):
+                self.TELEGRAM_BOT_ADMIN_IDS: list = [int(admin_id) for admin_id in admin_ids]
+            else:
+                # Если передан один ID как число, преобразуем в список
+                self.TELEGRAM_BOT_ADMIN_IDS: list = [int(admin_ids)]
         
         # API Configuration
         self.HIGGSFIELD_API_KEY: str = self._config.get("higgsfield_api_key", "")
         self.HIGGSFIELD_API_KEY_SECRET: str = self._config.get("higgsfield_api_key_secret", "")
         self.HIGGSFIELD_API_URL: str = self._config.get("higgsfield_api_url", "https://cloud.higgsfield.ai/api")
         self.HIGGSFIELD_MODEL_ID: str = self._config.get("higgsfield_model_id", "")
+        
+        # DeepSeek API Configuration
+        self.DEEPSEEK_API_KEY: str = self._config.get("deepseek_api_key", "")
         
         # Flask Admin
         self.ADMIN_PASSWORD: str = self._config.get("admin_password", "")
@@ -121,6 +140,9 @@ class Settings:
         
         # API Generation Timeout
         self.API_GENERATION_TIMEOUT: int = int(self._config.get("api_generation_timeout", "300"))  # 5 минут по умолчанию
+        
+        # File Cache TTL
+        self.FILE_CACHE_TTL_DAYS: int = int(self._config.get("file_cache_ttl_days", "7"))  # 7 дней по умолчанию
     
     def validate(self) -> bool:
         """
@@ -147,6 +169,27 @@ class Settings:
         os.makedirs(self.STORAGE_PATH, exist_ok=True)
         os.makedirs(os.path.dirname(self.DATABASE_PATH), exist_ok=True)
         os.makedirs(os.path.dirname(self.LOG_FILE), exist_ok=True)
+    
+    def is_admin(self, telegram_id: int) -> bool:
+        """
+        Проверить, является ли пользователь администратором.
+        
+        Args:
+            telegram_id: Telegram ID пользователя
+        
+        Returns:
+            True если пользователь является администратором
+        """
+        return telegram_id in self.TELEGRAM_BOT_ADMIN_IDS
+    
+    def get_admin_ids(self) -> list:
+        """
+        Получить список ID администраторов.
+        
+        Returns:
+            Список Telegram ID администраторов
+        """
+        return self.TELEGRAM_BOT_ADMIN_IDS.copy()
 
 
 # Создаем экземпляр настроек

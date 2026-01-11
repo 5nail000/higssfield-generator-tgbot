@@ -1,12 +1,13 @@
 """
 Менеджер базы данных.
 """
+from typing import Optional
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.exc import SQLAlchemyError
 from config.settings import settings
-from config.constants import CREDIT_REQUEST_AMOUNT, INITIAL_USER_CREDITS, get_model_cost_usd
-from database.models import Base, User, ActionHistory, AdminSession, CreditRequest
+from config.constants import CREDIT_REQUEST_AMOUNT, INITIAL_USER_CREDITS, get_model_cost_usd, MODE_SEEDREAM
+from database.models import Base, User, ActionHistory, AdminSession, CreditRequest, FileCache, FaceReferenceSet, FaceReferenceSetImage
 from utils.logger import logger
 from datetime import datetime, timedelta
 from sqlalchemy import func, and_
@@ -56,15 +57,21 @@ class DatabaseManager:
         try:
             user = session.query(User).filter(User.telegram_id == telegram_id).first()
             if not user:
-                user = User(telegram_id=telegram_id, username=username, credits=INITIAL_USER_CREDITS)
+                user = User(
+                    telegram_id=telegram_id, 
+                    username=username, 
+                    credits=INITIAL_USER_CREDITS,
+                    selected_mode=MODE_SEEDREAM  # По умолчанию Seedream
+                )
                 session.add(user)
                 session.commit()
-                logger.info(f"Создан новый пользователь: telegram_id={telegram_id}, начальный баланс: 10000.0 кредитов")
+                logger.info(f"Создан новый пользователь: telegram_id={telegram_id}, начальный баланс: 10000.0 кредитов, режим: {MODE_SEEDREAM}")
             elif username and user.username != username:
                 user.username = username
                 session.commit()
             # Загружаем все атрибуты перед отсоединением
             _ = user.credits  # Загружаем credits
+            _ = user.selected_mode  # Загружаем selected_mode
             session.expunge(user)  # Отсоединяем от сессии
             return user
         except SQLAlchemyError as e:
@@ -81,6 +88,7 @@ class DatabaseManager:
             user = session.query(User).filter(User.telegram_id == telegram_id).first()
             if user:
                 _ = user.credits  # Загружаем credits
+                _ = user.selected_mode  # Загружаем selected_mode
                 session.expunge(user)  # Отсоединяем от сессии
             return user
         finally:
@@ -93,8 +101,36 @@ class DatabaseManager:
             user = session.query(User).filter(User.id == user_id).first()
             if user:
                 _ = user.credits  # Загружаем credits
+                _ = user.selected_mode  # Загружаем selected_mode
                 session.expunge(user)  # Отсоединяем от сессии
             return user
+        finally:
+            session.close()
+    
+    def update_user_mode(self, telegram_id: int, mode: str) -> bool:
+        """
+        Обновить выбранный режим пользователя.
+        
+        Args:
+            telegram_id: Telegram ID пользователя
+            mode: Режим генерации ('nanobanana' или 'seedream')
+        
+        Returns:
+            True если успешно обновлено, False если пользователь не найден
+        """
+        session = self.get_session()
+        try:
+            user = session.query(User).filter(User.telegram_id == telegram_id).first()
+            if user:
+                user.selected_mode = mode
+                session.commit()
+                logger.debug(f"Обновлен режим пользователя {telegram_id}: {mode}")
+                return True
+            return False
+        except SQLAlchemyError as e:
+            session.rollback()
+            logger.error(f"Ошибка при обновлении режима пользователя: {e}")
+            return False
         finally:
             session.close()
     
@@ -150,18 +186,19 @@ class DatabaseManager:
             action_type: Тип действия
             request_data: Данные запроса (JSON строка)
             response_data: Данные ответа (JSON строка)
-            credits_spent: Потрачено кредитов
+            credits_spent: Потрачено виртуальных кредитов бота
             model_name: Название модели (например, 'nanobanana', 'seedream')
-            cost_usd: Стоимость в USD (если None, вычисляется из model_name)
+            cost_usd: Стоимость в реальных кредитах Higgsfield (если None, вычисляется из model_name)
+                     Примечание: Название параметра оставлено для совместимости, но хранятся кредиты, а не USD
         
         Returns:
             Объект ActionHistory
         """
         session = self.get_session()
         try:
-            # Если cost_usd не указан, но есть model_name, вычисляем стоимость
+            # Если cost_usd не указан, но есть model_name, вычисляем стоимость в кредитах Higgsfield
             if cost_usd is None and model_name:
-                cost_usd = get_model_cost_usd(model_name)
+                cost_usd = get_model_cost_usd(model_name)  # Возвращает кредиты Higgsfield
             
             action = ActionHistory(
                 user_id=user_id,
@@ -477,23 +514,25 @@ class DatabaseManager:
             # Получаем все записи
             actions = query.all()
             
-            # Агрегируем статистику
+            # Агрегируем статистику (cost_usd уже хранит реальные кредиты Higgsfield)
             stats = {
                 'total_requests': 0,
-                'total_cost_usd': 0.0,
+                'total_cost_usd': 0.0,  # Название для совместимости, но храним реальные кредиты Higgsfield
                 'by_model': {}
             }
             
             for action in actions:
                 stats['total_requests'] += 1
-                stats['total_cost_usd'] += action.cost_usd or 0.0
+                # cost_usd уже хранит реальные кредиты Higgsfield (не USD!)
+                real_credits = action.cost_usd or 0.0
+                stats['total_cost_usd'] += real_credits
                 
                 model_name = action.model_name or 'unknown'
                 if model_name not in stats['by_model']:
-                    stats['by_model'][model_name] = {'count': 0, 'cost_usd': 0.0}
+                    stats['by_model'][model_name] = {'count': 0, 'cost_usd': 0.0}  # Название для совместимости
                 
                 stats['by_model'][model_name]['count'] += 1
-                stats['by_model'][model_name]['cost_usd'] += action.cost_usd or 0.0
+                stats['by_model'][model_name]['cost_usd'] += real_credits
             
             # Округляем значения
             stats['total_cost_usd'] = round(stats['total_cost_usd'], 2)
@@ -516,6 +555,468 @@ class DatabaseManager:
             Словарь со статистикой (см. get_model_statistics)
         """
         return self.get_model_statistics(period=period, user_id=user_id)
+    
+    def get_users_credits_statistics(self, period: str = 'all') -> list:
+        """
+        Получить статистику по кредитам (тратам) по пользователям за период.
+        
+        Args:
+            period: Период ('all', 'day', 'week', 'month', 'quarter')
+        
+        Returns:
+            Список словарей с информацией о пользователях и их тратах:
+            [
+                {
+                    'user_id': int,
+                    'username': str,
+                    'telegram_id': int,
+                    'total_credits_spent': float,
+                    'total_requests': int
+                },
+                ...
+            ]
+        """
+        session = self.get_session()
+        try:
+            # Определяем диапазон дат
+            end_date = datetime.utcnow()
+            if period == 'day':
+                start_date = end_date.replace(hour=0, minute=0, second=0, microsecond=0)
+            elif period == 'week':
+                start_date = end_date - timedelta(days=7)
+            elif period == 'month':
+                start_date = end_date - timedelta(days=30)
+            elif period == 'quarter':
+                start_date = end_date - timedelta(days=90)
+            elif period == 'all':
+                start_date = datetime(1970, 1, 1)  # Начало эпохи
+            else:
+                start_date = datetime(1970, 1, 1)
+            
+            # Запрос для получения статистики по пользователям
+            # cost_usd уже хранит реальные кредиты Higgsfield (не USD!)
+            query = session.query(
+                ActionHistory.user_id,
+                func.sum(ActionHistory.cost_usd).label('total_credits'),
+                func.count(ActionHistory.id).label('total_requests')
+            ).filter(
+                and_(
+                    ActionHistory.timestamp >= start_date,
+                    ActionHistory.timestamp <= end_date,
+                    ActionHistory.action_type.like('api_request_%'),
+                    ActionHistory.cost_usd > 0
+                )
+            ).group_by(ActionHistory.user_id).order_by(func.sum(ActionHistory.cost_usd).desc())
+            
+            results = query.all()
+            
+            # Формируем список с информацией о пользователях
+            # cost_usd уже содержит реальные кредиты Higgsfield
+            users_stats = []
+            for user_id, total_credits, total_requests in results:
+                user = self.get_user_by_id(user_id)
+                users_stats.append({
+                    'user_id': user_id,
+                    'username': user.username if user else None,
+                    'telegram_id': user.telegram_id if user else user_id,
+                    'total_credits_spent': round(float(total_credits or 0.0), 2),
+                    'total_requests': int(total_requests or 0)
+                })
+            
+            return users_stats
+        finally:
+            session.close()
+    
+    # Методы для работы с кэшем файлов
+    def get_file_cache(self, file_hash: str) -> Optional[str]:
+        """
+        Получить кэшированную ссылку на файл по хешу.
+        
+        Args:
+            file_hash: SHA256 хеш файла
+        
+        Returns:
+            URL загруженного файла в Higgsfield или None если не найден или истек
+        """
+        session = self.get_session()
+        try:
+            cache = session.query(FileCache).filter(
+                FileCache.file_hash == file_hash,
+                FileCache.expires_at > datetime.utcnow()
+            ).first()
+            
+            if cache:
+                # Загружаем URL в переменную перед отсоединением
+                higgsfield_url = cache.higgsfield_url
+                
+                # Обновляем время последнего использования
+                cache.last_used_at = datetime.utcnow()
+                session.commit()
+                
+                logger.debug(f"Найдена кэшированная ссылка для file_hash={file_hash[:16]}...")
+                return higgsfield_url
+            
+            return None
+        finally:
+            session.close()
+    
+    def save_file_cache(self, file_hash: str, higgsfield_url: str, expires_at: datetime) -> FileCache:
+        """
+        Сохранить ссылку на файл в кэш.
+        
+        Args:
+            file_hash: SHA256 хеш файла
+            higgsfield_url: URL загруженного файла в Higgsfield
+            expires_at: Дата истечения ссылки
+        
+        Returns:
+            Объект FileCache
+        """
+        session = self.get_session()
+        try:
+            # Проверяем, существует ли уже запись
+            cache = session.query(FileCache).filter(FileCache.file_hash == file_hash).first()
+            
+            if cache:
+                # Обновляем существующую запись
+                cache.higgsfield_url = higgsfield_url
+                cache.expires_at = expires_at
+                cache.last_used_at = datetime.utcnow()
+            else:
+                # Создаем новую запись
+                cache = FileCache(
+                    file_hash=file_hash,
+                    higgsfield_url=higgsfield_url,
+                    expires_at=expires_at
+                )
+                session.add(cache)
+            
+            session.commit()
+            
+            # Загружаем все атрибуты перед отсоединением
+            _ = cache.higgsfield_url
+            _ = cache.expires_at
+            _ = cache.last_used_at
+            _ = cache.file_hash
+            session.expunge(cache)  # Теперь безопасно отсоединяем
+            
+            logger.debug(f"Сохранен кэш файла: file_hash={file_hash[:16]}..., expires_at={expires_at}")
+            return cache
+        except SQLAlchemyError as e:
+            session.rollback()
+            logger.error(f"Ошибка при сохранении кэша файла: {e}")
+            raise
+        finally:
+            session.close()
+    
+    def cleanup_expired_file_cache(self) -> int:
+        """
+        Очистить истекшие записи кэша файлов.
+        
+        Returns:
+            Количество удаленных записей
+        """
+        session = self.get_session()
+        try:
+            deleted = session.query(FileCache).filter(
+                FileCache.expires_at <= datetime.utcnow()
+            ).delete()
+            session.commit()
+            if deleted > 0:
+                logger.info(f"Удалено истекших записей кэша файлов: {deleted}")
+            return deleted
+        except SQLAlchemyError as e:
+            session.rollback()
+            logger.error(f"Ошибка при очистке кэша файлов: {e}")
+            return 0
+        finally:
+            session.close()
+    
+    # Методы для работы с наборами референсов
+    def create_face_reference_set(self, user_id: int, name: str) -> FaceReferenceSet:
+        """
+        Создать новый набор референсов.
+        
+        Args:
+            user_id: ID пользователя
+            name: Название набора
+        
+        Returns:
+            Объект FaceReferenceSet
+        """
+        session = self.get_session()
+        try:
+            reference_set = FaceReferenceSet(
+                user_id=user_id,
+                name=name
+            )
+            session.add(reference_set)
+            session.commit()
+            # Загружаем атрибуты перед отвязкой от сессии
+            session.refresh(reference_set)
+            # Получаем ID до expunge для логирования
+            set_id = reference_set.id
+            session.expunge(reference_set)
+            logger.debug(f"Создан набор референсов: user_id={user_id}, name={name}, id={set_id}")
+            return reference_set
+        except SQLAlchemyError as e:
+            session.rollback()
+            logger.error(f"Ошибка при создании набора референсов: {e}")
+            raise
+        finally:
+            session.close()
+    
+    def get_user_face_reference_sets(self, user_id: int) -> list:
+        """
+        Получить все наборы референсов пользователя.
+        
+        Args:
+            user_id: ID пользователя
+        
+        Returns:
+            Список объектов FaceReferenceSet
+        """
+        session = self.get_session()
+        try:
+            sets = session.query(FaceReferenceSet).filter(
+                FaceReferenceSet.user_id == user_id
+            ).order_by(FaceReferenceSet.created_at.desc()).all()
+            
+            for ref_set in sets:
+                session.expunge(ref_set)
+            
+            return sets
+        finally:
+            session.close()
+    
+    def get_face_reference_set(self, set_id: int, user_id: int = None) -> FaceReferenceSet:
+        """
+        Получить набор референсов по ID.
+        
+        Args:
+            set_id: ID набора
+            user_id: ID пользователя (опционально, для проверки владельца)
+        
+        Returns:
+            Объект FaceReferenceSet или None
+        """
+        session = self.get_session()
+        try:
+            query = session.query(FaceReferenceSet).filter(FaceReferenceSet.id == set_id)
+            if user_id:
+                query = query.filter(FaceReferenceSet.user_id == user_id)
+            
+            ref_set = query.first()
+            if ref_set:
+                session.expunge(ref_set)
+            return ref_set
+        finally:
+            session.close()
+    
+    def update_face_reference_set_name(self, set_id: int, user_id: int, new_name: str) -> bool:
+        """
+        Обновить название набора референсов.
+        
+        Args:
+            set_id: ID набора
+            user_id: ID пользователя (для проверки владельца)
+            new_name: Новое название набора
+        
+        Returns:
+            True если успешно обновлено
+        """
+        session = self.get_session()
+        try:
+            ref_set = session.query(FaceReferenceSet).filter(
+                FaceReferenceSet.id == set_id,
+                FaceReferenceSet.user_id == user_id
+            ).first()
+            
+            if ref_set:
+                ref_set.name = new_name
+                session.commit()
+                logger.debug(f"Обновлено название набора: set_id={set_id}, new_name={new_name}")
+                return True
+            return False
+        except SQLAlchemyError as e:
+            session.rollback()
+            logger.error(f"Ошибка при обновлении названия набора: {e}")
+            return False
+        finally:
+            session.close()
+    
+    def delete_face_reference_set(self, set_id: int, user_id: int) -> bool:
+        """
+        Удалить набор референсов.
+        
+        Args:
+            set_id: ID набора
+            user_id: ID пользователя (для проверки владельца)
+        
+        Returns:
+            True если успешно удалено
+        """
+        session = self.get_session()
+        try:
+            ref_set = session.query(FaceReferenceSet).filter(
+                FaceReferenceSet.id == set_id,
+                FaceReferenceSet.user_id == user_id
+            ).first()
+            
+            if ref_set:
+                session.delete(ref_set)
+                session.commit()
+                logger.debug(f"Удален набор референсов: set_id={set_id}, user_id={user_id}")
+                return True
+            return False
+        except SQLAlchemyError as e:
+            session.rollback()
+            logger.error(f"Ошибка при удалении набора референсов: {e}")
+            return False
+        finally:
+            session.close()
+    
+    def add_image_to_face_reference_set(self, set_id: int, file_path: str, file_hash: str = None) -> FaceReferenceSetImage:
+        """
+        Добавить изображение в набор референсов.
+        
+        Args:
+            set_id: ID набора
+            file_path: Путь к файлу изображения (может быть строкой или Path объектом)
+            file_hash: SHA256 хеш файла (опционально)
+        
+        Returns:
+            Объект FaceReferenceSetImage
+        """
+        session = self.get_session()
+        try:
+            # Конвертируем file_path в строку, если это Path объект
+            if hasattr(file_path, '__str__') and not isinstance(file_path, str):
+                file_path = str(file_path)
+            
+            image = FaceReferenceSetImage(
+                set_id=set_id,
+                file_path=file_path,
+                file_hash=file_hash
+            )
+            session.add(image)
+            session.commit()
+            session.expunge(image)
+            logger.debug(f"Добавлено изображение в набор: set_id={set_id}, file_path={file_path}")
+            return image
+        except SQLAlchemyError as e:
+            session.rollback()
+            logger.error(f"Ошибка при добавлении изображения в набор: {e}")
+            raise
+        finally:
+            session.close()
+    
+    def remove_image_from_face_reference_set(self, image_id: int, set_id: int, user_id: int) -> bool:
+        """
+        Удалить изображение из набора референсов.
+        
+        Args:
+            image_id: ID изображения
+            set_id: ID набора
+            user_id: ID пользователя (для проверки владельца)
+        
+        Returns:
+            True если успешно удалено
+        """
+        session = self.get_session()
+        try:
+            # Проверяем, что набор принадлежит пользователю
+            ref_set = session.query(FaceReferenceSet).filter(
+                FaceReferenceSet.id == set_id,
+                FaceReferenceSet.user_id == user_id
+            ).first()
+            
+            if not ref_set:
+                return False
+            
+            image = session.query(FaceReferenceSetImage).filter(
+                FaceReferenceSetImage.id == image_id,
+                FaceReferenceSetImage.set_id == set_id
+            ).first()
+            
+            if image:
+                session.delete(image)
+                session.commit()
+                logger.debug(f"Удалено изображение из набора: image_id={image_id}, set_id={set_id}")
+                return True
+            return False
+        except SQLAlchemyError as e:
+            session.rollback()
+            logger.error(f"Ошибка при удалении изображения из набора: {e}")
+            return False
+        finally:
+            session.close()
+    
+    def update_face_reference_set_image_path(self, image_id: int, new_file_path: str) -> bool:
+        """
+        Обновить путь к файлу изображения в наборе референсов.
+        
+        Args:
+            image_id: ID изображения
+            new_file_path: Новый путь к файлу
+        
+        Returns:
+            True если успешно обновлено
+        """
+        session = self.get_session()
+        try:
+            # Конвертируем new_file_path в строку, если это Path объект
+            if hasattr(new_file_path, '__str__') and not isinstance(new_file_path, str):
+                new_file_path = str(new_file_path)
+            
+            image = session.query(FaceReferenceSetImage).filter(
+                FaceReferenceSetImage.id == image_id
+            ).first()
+            
+            if image:
+                image.file_path = new_file_path
+                session.commit()
+                logger.debug(f"Обновлен путь изображения в наборе: image_id={image_id}, new_path={new_file_path}")
+                return True
+            return False
+        except SQLAlchemyError as e:
+            session.rollback()
+            logger.error(f"Ошибка при обновлении пути изображения в наборе: {e}")
+            return False
+        finally:
+            session.close()
+    
+    def get_face_reference_set_images(self, set_id: int, user_id: int = None) -> list:
+        """
+        Получить все изображения набора референсов.
+        
+        Args:
+            set_id: ID набора
+            user_id: ID пользователя (опционально, для проверки владельца)
+        
+        Returns:
+            Список объектов FaceReferenceSetImage
+        """
+        session = self.get_session()
+        try:
+            query = session.query(FaceReferenceSetImage).filter(
+                FaceReferenceSetImage.set_id == set_id
+            )
+            
+            if user_id:
+                # Проверяем владельца через join
+                query = query.join(FaceReferenceSet).filter(
+                    FaceReferenceSet.user_id == user_id
+                )
+            
+            images = query.order_by(FaceReferenceSetImage.created_at).all()
+            
+            for image in images:
+                session.expunge(image)
+            
+            return images
+        finally:
+            session.close()
 
 
 # Создаем глобальный экземпляр менеджера БД

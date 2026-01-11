@@ -24,6 +24,7 @@ Notes:
 import os
 import time
 import uuid
+import hashlib
 from pathlib import Path
 from typing import Optional
 from config.settings import settings
@@ -114,6 +115,38 @@ class FileManager:
         used_dir.mkdir(parents=True, exist_ok=True)
         return used_dir
     
+    def get_set_directory(self, user_id: int, set_id: int) -> Path:
+        """
+        Получить путь к директории набора референсов.
+        
+        Args:
+            user_id: ID пользователя
+            set_id: ID набора референсов
+        
+        Returns:
+            Path к директории sets/{set_id} пользователя
+        """
+        user_dir = self.get_user_directory(user_id)
+        sets_dir = user_dir / "sets" / str(set_id)
+        sets_dir.mkdir(parents=True, exist_ok=True)
+        return sets_dir
+    
+    def get_set_directory(self, user_id: int, set_id: int) -> Path:
+        """
+        Получить путь к директории набора референсов.
+        
+        Args:
+            user_id: ID пользователя
+            set_id: ID набора референсов
+        
+        Returns:
+            Path к директории sets/{set_id} пользователя
+        """
+        user_dir = self.get_user_directory(user_id)
+        sets_dir = user_dir / "sets" / str(set_id)
+        sets_dir.mkdir(parents=True, exist_ok=True)
+        return sets_dir
+    
     def move_to_last_uploads(self, user_id: int, file_paths: list[str]) -> list[str]:
         """
         Переместить файлы в папку last_uploads.
@@ -134,6 +167,14 @@ class FileManager:
                 try:
                     source_path = Path(file_path)
                     filename = source_path.name
+                    
+                    # Проверяем, не находится ли файл в папке набора (sets/{set_id}/)
+                    # Файлы из наборов не должны перемещаться
+                    if 'sets' in str(source_path):
+                        logger.debug(f"Файл из набора, пропущен (не перемещается): {file_path}")
+                        new_paths.append(str(source_path))  # Оставляем оригинальный путь
+                        continue
+                    
                     dest_path = last_uploads_dir / filename
                     
                     # Проверяем, не находится ли файл уже в last_uploads
@@ -171,25 +212,39 @@ class FileManager:
         new_paths = []
         
         for file_path in file_paths:
-            if file_path and os.path.exists(file_path):
-                try:
-                    source_path = Path(file_path)
-                    filename = source_path.name
+            if not file_path:
+                continue
+                
+            # Проверяем существование файла
+            if not os.path.exists(file_path):
+                logger.warning(f"Файл не найден, пропускаем перемещение в used: {file_path}")
+                continue
+                
+            try:
+                source_path = Path(file_path)
+                filename = source_path.name
+                dest_path = used_dir / filename
+                
+                # Если файл с таким именем уже существует, добавляем timestamp
+                if dest_path.exists():
+                    timestamp = int(time.time())
+                    name_parts = source_path.stem, timestamp, source_path.suffix
+                    filename = f"{name_parts[0]}_{name_parts[1]}{name_parts[2]}"
                     dest_path = used_dir / filename
-                    
-                    # Если файл с таким именем уже существует, добавляем timestamp
-                    if dest_path.exists():
-                        timestamp = int(time.time())
-                        name_parts = source_path.stem, timestamp, source_path.suffix
-                        filename = f"{name_parts[0]}_{name_parts[1]}{name_parts[2]}"
-                        dest_path = used_dir / filename
-                    
-                    # Перемещаем файл
-                    source_path.rename(dest_path)
-                    new_paths.append(str(dest_path))
-                    logger.debug(f"Файл перемещен в used: {file_path} -> {dest_path}")
-                except Exception as e:
-                    logger.error(f"Ошибка при перемещении файла {file_path} в used: {e}")
+                
+                # Дополнительная проверка перед перемещением (на случай, если файл был удален между проверками)
+                if not source_path.exists():
+                    logger.warning(f"Файл был удален перед перемещением, пропускаем: {file_path}")
+                    continue
+                
+                # Перемещаем файл
+                source_path.rename(dest_path)
+                new_paths.append(str(dest_path))
+                logger.debug(f"Файл перемещен в used: {file_path} -> {dest_path}")
+            except FileNotFoundError:
+                logger.warning(f"Файл не найден при перемещении в used (возможно, уже удален): {file_path}")
+            except Exception as e:
+                logger.error(f"Ошибка при перемещении файла {file_path} в used: {e}")
         
         return new_paths
     
@@ -207,11 +262,167 @@ class FileManager:
         file_paths = []
         
         if last_uploads_dir.exists():
+            # Получаем файлы с информацией о времени модификации для сортировки по порядку создания
+            files_with_time = []
             for file_path in last_uploads_dir.iterdir():
                 if file_path.is_file():
-                    file_paths.append(str(file_path))
+                    files_with_time.append((file_path.stat().st_mtime, str(file_path)))
+            
+            # Сортируем по времени модификации (время создания файла) для сохранения порядка
+            files_with_time.sort(key=lambda x: x[0])
+            file_paths = [path for _, path in files_with_time]
         
-        return sorted(file_paths)  # Сортируем для предсказуемости
+        return file_paths
+    
+    def find_file_by_name(self, user_id: int, filename: str) -> Optional[str]:
+        """
+        Найти файл по имени в различных папках пользователя.
+        Ищет в следующем порядке: sets (все наборы), last_uploads, корневая папка пользователя, results, used.
+        
+        Args:
+            user_id: ID пользователя
+            filename: Имя файла для поиска
+        
+        Returns:
+            Путь к найденному файлу или None, если файл не найден
+        """
+        user_dir = self.get_user_directory(user_id)
+        
+        # Сначала ищем в папках наборов (sets/{set_id}/)
+        sets_dir = user_dir / "sets"
+        if sets_dir.exists():
+            for set_dir in sets_dir.iterdir():
+                if set_dir.is_dir():
+                    file_path = set_dir / filename
+                    if file_path.exists() and file_path.is_file():
+                        logger.debug(f"Файл найден: {filename} в {set_dir}")
+                        return str(file_path)
+        
+        # Затем ищем в других папках
+        search_dirs = [
+            self.get_last_uploads_directory(user_id),
+            user_dir,  # Корневая папка пользователя
+            self.get_results_directory(user_id),
+            self.get_used_directory(user_id)
+        ]
+        
+        for search_dir in search_dirs:
+            if not search_dir.exists():
+                continue
+            
+            file_path = search_dir / filename
+            if file_path.exists() and file_path.is_file():
+                logger.debug(f"Файл найден: {filename} в {search_dir}")
+                return str(file_path)
+        
+        logger.warning(f"Файл не найден: {filename} для пользователя {user_id}")
+        return None
+    
+    def move_file_to_set(self, user_id: int, set_id: int, file_path: str) -> str:
+        """
+        Переместить файл в папку набора референсов.
+        Если файл уже находится в папке набора, возвращает его путь без изменений.
+        
+        Args:
+            user_id: ID пользователя
+            set_id: ID набора референсов
+            file_path: Путь к файлу для перемещения
+        
+        Returns:
+            Новый путь к файлу в папке набора
+        """
+        if not file_path or not os.path.exists(file_path):
+            raise FileNotFoundError(f"Файл не найден: {file_path}")
+        
+        set_dir = self.get_set_directory(user_id, set_id)
+        source_path = Path(file_path)
+        filename = source_path.name
+        dest_path = set_dir / filename
+        
+        # Проверяем, не находится ли файл уже в папке набора
+        if source_path.parent == set_dir:
+            logger.debug(f"Файл уже в папке набора, пропущен: {file_path}")
+            return str(source_path)
+        
+        # Если файл с таким именем уже существует в папке набора, добавляем timestamp
+        if dest_path.exists():
+            timestamp = int(time.time())
+            name_parts = filename.rsplit('.', 1)
+            if len(name_parts) == 2:
+                new_filename = f"{name_parts[0]}_{timestamp}.{name_parts[1]}"
+            else:
+                new_filename = f"{filename}_{timestamp}"
+            dest_path = set_dir / new_filename
+        
+        # Перемещаем файл
+        try:
+            source_path.rename(dest_path)
+            logger.debug(f"Файл перемещен в папку набора: {file_path} -> {dest_path}")
+            return str(dest_path)
+        except Exception as e:
+            logger.error(f"Ошибка при перемещении файла {file_path} в папку набора: {e}")
+            raise
+    
+    def move_set_files_to_used(self, user_id: int, set_id: int) -> int:
+        """
+        Переместить все файлы из папки набора в used.
+        
+        Args:
+            user_id: ID пользователя
+            set_id: ID набора референсов
+        
+        Returns:
+            Количество перемещенных файлов
+        """
+        set_dir = self.get_set_directory(user_id, set_id)
+        moved_count = 0
+        
+        if set_dir.exists():
+            file_paths = [str(file_path) for file_path in set_dir.iterdir() if file_path.is_file()]
+            if file_paths:
+                moved_paths = self.move_to_used(user_id, file_paths)
+                moved_count = len(moved_paths)
+                logger.debug(f"Перемещено {moved_count} файлов из набора {set_id} в used для пользователя {user_id}")
+        
+        return moved_count
+    
+    def clear_user_temp_files(self, user_id: int) -> int:
+        """
+        Очистить временные файлы пользователя (last_uploads и корневая папка).
+        Перемещает все файлы в used.
+        
+        Args:
+            user_id: ID пользователя
+        
+        Returns:
+            Количество перемещенных файлов
+        """
+        moved_count = 0
+        
+        # Очищаем last_uploads
+        last_uploads_dir = self.get_last_uploads_directory(user_id)
+        if last_uploads_dir.exists():
+            file_paths = [str(file_path) for file_path in last_uploads_dir.iterdir() if file_path.is_file()]
+            if file_paths:
+                moved_paths = self.move_to_used(user_id, file_paths)
+                moved_count += len(moved_paths)
+        
+        # Очищаем корневую папку пользователя (кроме папок sets, last_uploads, results, used)
+        user_dir = self.get_user_directory(user_id)
+        if user_dir.exists():
+            file_paths = []
+            for file_path in user_dir.iterdir():
+                if file_path.is_file():
+                    file_paths.append(str(file_path))
+            
+            if file_paths:
+                moved_paths = self.move_to_used(user_id, file_paths)
+                moved_count += len(moved_paths)
+        
+        if moved_count > 0:
+            logger.debug(f"Очищены временные файлы пользователя {user_id}: перемещено {moved_count} файлов в used")
+        
+        return moved_count
     
     def clear_last_uploads(self, user_id: int) -> int:
         """
@@ -237,7 +448,7 @@ class FileManager:
         
         return moved_count
     
-    def save_result_image(self, user_id: int, image_data: bytes, filename: str = None) -> tuple[Path, str]:
+    def save_result_image(self, user_id: int, image_data: bytes, filename: str = None, prompt: str = None, model: str = None) -> tuple[Path, str]:
         """
         Сохранить результат генерации (изображение) в папку results.
         
@@ -245,6 +456,8 @@ class FileManager:
             user_id: ID пользователя
             image_data: Данные изображения (bytes)
             filename: Имя файла (опционально, будет сгенерировано если не указано)
+            prompt: Промпт для записи в EXIF (опционально)
+            model: Модель для записи в EXIF (опционально)
         
         Returns:
             Tuple (путь к файлу, публичный URL)
@@ -260,8 +473,37 @@ class FileManager:
         
         # Сохраняем файл
         try:
-            with open(file_path, 'wb') as f:
-                f.write(image_data)
+            # Если есть промпт или модель, добавляем EXIF метаданные
+            if prompt or model:
+                try:
+                    from PIL import Image
+                    from PIL.PngImagePlugin import PngInfo
+                    import io
+                    
+                    # Открываем изображение из байтов
+                    img = Image.open(io.BytesIO(image_data))
+                    
+                    # Создаем объект для метаданных PNG
+                    metadata = PngInfo()
+                    
+                    # Добавляем промпт и модель в метаданные PNG
+                    if prompt:
+                        metadata.add_text("Prompt", prompt[:65535])
+                    if model:
+                        metadata.add_text("Model", model)
+                    
+                    # Сохраняем с метаданными
+                    img.save(file_path, format='PNG', pnginfo=metadata)
+                    logger.debug(f"Изображение сохранено с EXIF метаданными: prompt={bool(prompt)}, model={bool(model)}")
+                except Exception as exif_error:
+                    logger.warning(f"Ошибка при обработке EXIF: {exif_error}, сохраняем без метаданных")
+                    # Сохраняем без EXIF если не удалось
+                    with open(file_path, 'wb') as f:
+                        f.write(image_data)
+            else:
+                # Сохраняем без EXIF
+                with open(file_path, 'wb') as f:
+                    f.write(image_data)
             
             # Генерируем публичный URL
             public_url = f"{self.external_url}/files/{user_id}/results/{filename}"
@@ -391,6 +633,45 @@ class FileManager:
                     })
         
         return files
+    
+    def calculate_file_hash(self, file_path: str) -> str:
+        """
+        Вычислить SHA256 хеш файла.
+        
+        Args:
+            file_path: Путь к файлу
+        
+        Returns:
+            SHA256 хеш файла в виде hex строки
+        """
+        try:
+            sha256_hash = hashlib.sha256()
+            with open(file_path, "rb") as f:
+                # Читаем файл блоками для экономии памяти
+                for byte_block in iter(lambda: f.read(4096), b""):
+                    sha256_hash.update(byte_block)
+            return sha256_hash.hexdigest()
+        except Exception as e:
+            logger.error(f"Ошибка при вычислении хеша файла {file_path}: {e}")
+            raise
+    
+    def calculate_file_hash_from_data(self, file_data: bytes) -> str:
+        """
+        Вычислить SHA256 хеш из данных файла.
+        
+        Args:
+            file_data: Данные файла в виде bytes
+        
+        Returns:
+            SHA256 хеш файла в виде hex строки
+        """
+        try:
+            sha256_hash = hashlib.sha256()
+            sha256_hash.update(file_data)
+            return sha256_hash.hexdigest()
+        except Exception as e:
+            logger.error(f"Ошибка при вычислении хеша из данных: {e}")
+            raise
     
     def cleanup_old_files(self, user_id: int, days: int = 30) -> int:
         """

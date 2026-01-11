@@ -1,10 +1,10 @@
 {% extends "base.html" %}
 
-{% block title %}Метрики по моделям{% endblock %}
+{% block title %}Метрики{% endblock %}
 
 {% block content %}
 <div class="container">
-    <h1>📊 Метрики по моделям генерации</h1>
+    <h1>📊 Метрики</h1>
     
     <!-- Фильтры -->
     <div class="filters" style="margin-bottom: 20px;">
@@ -44,9 +44,65 @@
         </div>
         
         <div class="stat-card" style="background: #f8f9fa; padding: 20px; border-radius: 8px; border: 1px solid #dee2e6;">
-            <h3 style="margin: 0 0 10px 0; color: #6c757d; font-size: 14px;">Общая стоимость (USD)</h3>
-            <p style="margin: 0; font-size: 32px; font-weight: bold; color: #28a745;">${{ "%.2f"|format(stats.total_cost_usd) }}</p>
+            <h3 style="margin: 0 0 10px 0; color: #6c757d; font-size: 14px;">Общие кредиты (Хигсфилд)</h3>
+            <p style="margin: 0; font-size: 32px; font-weight: bold; color: #28a745;">{{ "%.2f"|format(stats.total_cost_usd) }}</p>
         </div>
+        
+        <div class="stat-card" style="background: #f8f9fa; padding: 20px; border-radius: 8px; border: 1px solid #dee2e6;">
+            <h3 style="margin: 0 0 10px 0; color: #6c757d; font-size: 14px;">Общая стоимость (USD)</h3>
+            <p style="margin: 0; font-size: 32px; font-weight: bold; color: #007bff;">${{ "%.4f"|format(credits_to_usd(stats.total_cost_usd)) }}</p>
+        </div>
+    </div>
+    
+    <!-- Статистика по пользователям -->
+    <h2>Статистика по пользователям</h2>
+    <div class="users-stats" style="margin-bottom: 30px;">
+        {% if users_stats %}
+        <table class="table" style="width: 100%; border-collapse: collapse; margin-top: 20px;">
+            <thead>
+                <tr style="background: #f8f9fa; border-bottom: 2px solid #dee2e6;">
+                    <th style="padding: 12px; text-align: left;">Пользователь</th>
+                    <th style="padding: 12px; text-align: right;">Количество запросов</th>
+                    <th style="padding: 12px; text-align: right;">Кредиты (Хигсфилд)</th>
+                    <th style="padding: 12px; text-align: right;">Стоимость (USD)</th>
+                    <th style="padding: 12px; text-align: right;">Среднее на запрос</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for user_stat in users_stats %}
+                <tr style="border-bottom: 1px solid #dee2e6;">
+                    <td style="padding: 12px;">
+                        <strong>
+                            {% if user_stat.username %}
+                                {{ user_stat.username }}
+                            {% else %}
+                                ID: {{ user_stat.telegram_id }}
+                            {% endif %}
+                        </strong>
+                        <br>
+                        <small style="color: #6c757d;">Telegram ID: {{ user_stat.telegram_id }}</small>
+                    </td>
+                    <td style="padding: 12px; text-align: right;">{{ user_stat.total_requests }}</td>
+                    <td style="padding: 12px; text-align: right; color: #28a745; font-weight: bold;">
+                        {{ "%.2f"|format(user_stat.total_credits_spent) }}
+                    </td>
+                    <td style="padding: 12px; text-align: right; color: #007bff; font-weight: bold;">
+                        ${{ "%.4f"|format(credits_to_usd(user_stat.total_credits_spent)) }}
+                    </td>
+                    <td style="padding: 12px; text-align: right;">
+                        {% if user_stat.total_requests > 0 %}
+                        {{ "%.2f"|format(user_stat.total_credits_spent / user_stat.total_requests) }}
+                        {% else %}
+                        0.00
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p style="color: #6c757d; margin-top: 20px;">Нет данных за выбранный период.</p>
+        {% endif %}
     </div>
     
     <!-- Статистика по моделям -->
@@ -58,8 +114,9 @@
                 <tr style="background: #f8f9fa; border-bottom: 2px solid #dee2e6;">
                     <th style="padding: 12px; text-align: left;">Модель</th>
                     <th style="padding: 12px; text-align: right;">Количество запросов</th>
+                    <th style="padding: 12px; text-align: right;">Кредиты (Хигсфилд)</th>
                     <th style="padding: 12px; text-align: right;">Стоимость (USD)</th>
-                    <th style="padding: 12px; text-align: right;">Средняя стоимость</th>
+                    <th style="padding: 12px; text-align: right;">Среднее на запрос</th>
                     <th style="padding: 12px; text-align: right;">% от общего</th>
                 </tr>
             </thead>
@@ -71,13 +128,16 @@
                     </td>
                     <td style="padding: 12px; text-align: right;">{{ model_stats.count }}</td>
                     <td style="padding: 12px; text-align: right; color: #28a745; font-weight: bold;">
-                        ${{ "%.2f"|format(model_stats.cost_usd) }}
+                        {{ "%.2f"|format(model_stats.cost_usd) }}
+                    </td>
+                    <td style="padding: 12px; text-align: right; color: #007bff; font-weight: bold;">
+                        ${{ "%.4f"|format(credits_to_usd(model_stats.cost_usd)) }}
                     </td>
                     <td style="padding: 12px; text-align: right;">
                         {% if model_stats.count > 0 %}
-                        ${{ "%.2f"|format(model_stats.cost_usd / model_stats.count) }}
+                        {{ "%.2f"|format(model_stats.cost_usd / model_stats.count) }}
                         {% else %}
-                        $0.00
+                        0.00
                         {% endif %}
                     </td>
                     <td style="padding: 12px; text-align: right;">
@@ -96,23 +156,6 @@
         {% endif %}
     </div>
     
-    <!-- График распределения (простой текстовый) -->
-    {% if stats.by_model and stats.total_cost_usd > 0 %}
-    <div class="chart" style="margin-top: 30px;">
-        <h3>Распределение по моделям</h3>
-        {% for model_name, model_stats in stats.by_model.items() %}
-        <div style="margin-bottom: 10px;">
-            <div style="display: flex; align-items: center; gap: 10px;">
-                <span style="min-width: 150px;">{{ model_display_names.get(model_name, model_name) }}:</span>
-                <div style="flex: 1; background: #e9ecef; height: 20px; border-radius: 4px; overflow: hidden;">
-                    <div style="background: #007bff; height: 100%; width: {{ ((model_stats.cost_usd / stats.total_cost_usd) * 100)|round(1) }}%;"></div>
-                </div>
-                <span style="min-width: 80px; text-align: right;">{{ "%.1f"|format((model_stats.cost_usd / stats.total_cost_usd) * 100) }}%</span>
-            </div>
-        </div>
-        {% endfor %}
-    </div>
-    {% endif %}
     
     <div style="margin-top: 30px;">
         <a href="{{ url_for('admin.dashboard') }}" class="btn btn-primary">← Назад к дашборду</a>
