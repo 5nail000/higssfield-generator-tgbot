@@ -118,10 +118,12 @@ pip install -r requirements.txt
    ```json
    {
      "telegram_bot_token": "YOUR_BOT_TOKEN",
-     "telegram_bot_admin_id": YOUR_ADMIN_TELEGRAM_ID,
+     "telegram_bot_admin_ids": [YOUR_ADMIN_TELEGRAM_ID],
      "higgsfield_api_key": "YOUR_API_KEY",
      "higgsfield_api_key_secret": "YOUR_API_SECRET",
      "higgsfield_api_url": "https://cloud.higgsfield.ai/api",
+     "higgsfield_model_id": "bytedance/seedream/v4/text-to-image",
+     "deepseek_api_key": "YOUR_DEEPSEEK_API_KEY",
      "admin_password": "YOUR_ADMIN_PASSWORD",
      "storage_path": "storage/users",
      "database_path": "database/app.db",
@@ -130,7 +132,8 @@ pip install -r requirements.txt
      "log_level": "INFO",
      "log_file": "logs/app.log",
      "max_file_size": 10485760,
-     "api_generation_timeout": 300
+     "api_generation_timeout": 300,
+     "file_cache_ttl_days": 7
    }
    ```
 
