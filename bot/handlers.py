@@ -3159,60 +3159,40 @@ async def storage_size_command(update: Update, context: ContextTypes.DEFAULT_TYP
         return ConversationHandler.END
     
     try:
-        # Получаем путь к корню проекта
-        from pathlib import Path
-        import os
-        
-        # Определяем корень проекта (родительская директория от config)
-        project_root = Path(__file__).parent.parent
-        
-        # Функция для подсчета размера директории
-        def get_directory_size(path: Path) -> int:
-            """Подсчитать размер директории в байтах."""
-            total_size = 0
-            try:
-                for dirpath, dirnames, filenames in os.walk(path):
-                    # Пропускаем некоторые директории для ускорения
-                    dirname = os.path.basename(dirpath)
-                    if dirname in ['.git', '__pycache__', '.pytest_cache', 'venv', 'env', '.venv']:
-                        dirnames[:] = []  # Не заходим в эти директории
-                        continue
-                    
-                    for filename in filenames:
-                        filepath = os.path.join(dirpath, filename)
-                        try:
-                            total_size += os.path.getsize(filepath)
-                        except (OSError, FileNotFoundError):
-                            pass
-            except Exception as e:
-                logger.error(f"Ошибка при подсчете размера директории {path}: {e}")
-            return total_size
-        
-        # Подсчитываем размер основных директорий
-        storage_path = Path(settings.STORAGE_PATH)
-        database_path = Path(settings.DATABASE_PATH)
-        log_path = Path(settings.LOG_FILE).parent if settings.LOG_FILE else None
-        
-        # Размер всего проекта
-        total_size = get_directory_size(project_root)
-        
-        # Размер хранилища файлов
-        storage_size = 0
-        if storage_path.exists():
-            storage_size = get_directory_size(storage_path)
-        
-        # Размер базы данных
-        db_size = 0
-        if database_path.exists():
-            db_size = os.path.getsize(database_path)
-        
-        # Размер логов
-        log_size = 0
-        if log_path and log_path.exists():
-            log_size = get_directory_size(log_path)
-        
-        # Размер остальных файлов (код, конфиги и т.д.)
-        other_size = total_size - storage_size - db_size - log_size
+        # Подсчёт размеров в executor, чтобы не блокировать event loop (os.walk может быть долгим)
+        def _compute_storage_sizes():
+            project_root = Path(__file__).parent.parent
+
+            def get_directory_size(path: Path) -> int:
+                total_size = 0
+                try:
+                    for dirpath, dirnames, filenames in os.walk(path):
+                        dirname = os.path.basename(dirpath)
+                        if dirname in ['.git', '__pycache__', '.pytest_cache', 'venv', 'env', '.venv']:
+                            dirnames[:] = []
+                            continue
+                        for filename in filenames:
+                            filepath = os.path.join(dirpath, filename)
+                            try:
+                                total_size += os.path.getsize(filepath)
+                            except (OSError, FileNotFoundError):
+                                pass
+                except Exception as e:
+                    logger.error(f"Ошибка при подсчете размера директории {path}: {e}")
+                return total_size
+
+            storage_path = Path(settings.STORAGE_PATH)
+            database_path = Path(settings.DATABASE_PATH)
+            log_path = Path(settings.LOG_FILE).parent if settings.LOG_FILE else None
+
+            total_size = get_directory_size(project_root)
+            storage_size = get_directory_size(storage_path) if storage_path.exists() else 0
+            db_size = os.path.getsize(database_path) if database_path.exists() else 0
+            log_size = get_directory_size(log_path) if log_path and log_path.exists() else 0
+            other_size = total_size - storage_size - db_size - log_size
+            return total_size, storage_size, db_size, log_size, other_size
+
+        total_size, storage_size, db_size, log_size, other_size = await run_file_operation(_compute_storage_sizes)
         
         # Форматируем размеры
         def format_size(size_bytes: int) -> str:

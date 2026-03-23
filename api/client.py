@@ -136,6 +136,13 @@ class SeedreamAPIClient:
             logger.warning("Используем публичный URL локального сервера как fallback (не кэшируется)")
             return self._get_public_url(file_path)
     
+    async def _upload_file_async(self, file_path: str) -> str:
+        """
+        Асинхронная обёртка для upload_file. Выполняет в executor, чтобы не блокировать event loop.
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self.upload_file, file_path)
+    
     def _get_public_url(self, file_path: str) -> str:
         """
         Получить публичный URL локального сервера для файла.
@@ -247,10 +254,10 @@ class SeedreamAPIClient:
             if len(images_to_upload) > 14:
                 raise ValueError(f"Максимальное количество изображений для Seedream: 14, получено: {len(images_to_upload)}")
             
-            # Загружаем изображения и получаем их URL
+            # Загружаем изображения и получаем их URL (в executor, чтобы не блокировать event loop)
             image_urls = []
             for img_path in images_to_upload:
-                image_url = self.upload_file(img_path)
+                image_url = await self._upload_file_async(img_path)
                 image_urls.append(image_url)
                 logger.debug(f"Загружено изображение: {img_path} -> {image_url[:50]}...")
             
@@ -542,6 +549,13 @@ class NanoBananaAPIClient:
             logger.warning("Используем публичный URL локального сервера как fallback (не кэшируется)")
             return self._get_public_url(file_path)
     
+    async def _upload_file_async(self, file_path: str) -> str:
+        """
+        Асинхронная обёртка для upload_file. Выполняет в executor, чтобы не блокировать event loop.
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self.upload_file, file_path)
+    
     def _get_public_url(self, file_path: str) -> str:
         """
         Получить публичный URL локального сервера для файла.
@@ -652,10 +666,10 @@ class NanoBananaAPIClient:
             # Определяем, какой endpoint и формат использовать
             if images_to_upload:
                 # Запрос с изображением(ями) - используем image2image endpoint
-                # Загружаем все изображения и получаем их URL
+                # Загружаем все изображения и получаем их URL (в executor, чтобы не блокировать event loop)
                 input_images = []
                 for img_path in images_to_upload:
-                    image_url = self.upload_file(img_path)
+                    image_url = await self._upload_file_async(img_path)
                     input_images.append({
                         "type": "image_url",
                         "image_url": image_url
