@@ -1,0 +1,41 @@
+# systemd unit для Telegram-бота + Flask-админки (run.py)
+#
+# Установка на сервере (Linux с systemd):
+#   1. Скопируйте файл и при необходимости поправьте пути в [Service]:
+#      sudo cp deploy/higgsfield-bot.service /etc/systemd/system/
+#      sudo nano /etc/systemd/system/higgsfield-bot.service
+#   2. Убедитесь, что в каталоге проекта есть venv и config.json.
+#   3. sudo systemctl daemon-reload
+#   4. sudo systemctl enable --now higgsfield-bot.service
+#   5. sudo systemctl status higgsfield-bot.service
+#   Журнал: journalctl -u higgsfield-bot.service -f
+#
+# Для отдельного пользователя (не root): раскомментируйте User/Group и
+# перенесите проект из /root в домашний каталог этого пользователя.
+
+[Unit]
+Description=HiggsField Telegram Bot and Flask admin (run.py)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Каталог репозитория на сервере (измените при другом пути)
+WorkingDirectory=/root/higssfield-generator-tgbot
+ExecStart=/root/higssfield-generator-tgbot/venv/bin/python /root/higssfield-generator-tgbot/run.py
+Restart=always
+RestartSec=5
+
+# Корректные логи в journald (без буфера Python)
+Environment=PYTHONUNBUFFERED=1
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=higgsfield-bot
+
+# Опционально: не запускать от root
+# User=higgsfield
+# Group=higgsfield
+
+[Install]
+WantedBy=multi-user.target
